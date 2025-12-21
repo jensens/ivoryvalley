@@ -6,6 +6,7 @@
 use rusqlite::{Connection, Result};
 use serde_json::Value;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Extracts the URI to use for deduplication from a Mastodon status.
@@ -29,8 +30,9 @@ pub fn extract_dedup_uri(status: &Value) -> Option<&str> {
 /// Storage for tracking seen message URIs.
 ///
 /// Uses SQLite with WAL mode for concurrent read access and durability.
+/// Thread-safe via internal Mutex.
 pub struct SeenUriStore {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl SeenUriStore {
@@ -57,14 +59,15 @@ impl SeenUriStore {
             [],
         )?;
 
-        Ok(Self { conn })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Checks if a URI has been seen before.
     pub fn is_seen(&self, uri: &str) -> Result<bool> {
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT 1 FROM seen_uris WHERE uri = ?")?;
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare_cached("SELECT 1 FROM seen_uris WHERE uri = ?")?;
         let exists = stmt.exists([uri])?;
         Ok(exists)
     }
@@ -78,7 +81,8 @@ impl SeenUriStore {
             .expect("Time went backwards")
             .as_secs() as i64;
 
-        self.conn.execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT OR IGNORE INTO seen_uris (uri, first_seen) VALUES (?, ?)",
             (uri, now),
         )?;
@@ -91,9 +95,10 @@ impl SeenUriStore {
     /// If max_age_secs is 0, removes all entries.
     /// Returns the number of removed entries.
     pub fn cleanup(&self, max_age_secs: u64) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
         let removed = if max_age_secs == 0 {
             // Special case: remove all entries
-            self.conn.execute("DELETE FROM seen_uris", [])?
+            conn.execute("DELETE FROM seen_uris", [])?
         } else {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -102,8 +107,7 @@ impl SeenUriStore {
 
             let cutoff = now - (max_age_secs as i64);
 
-            self.conn
-                .execute("DELETE FROM seen_uris WHERE first_seen < ?", [cutoff])?
+            conn.execute("DELETE FROM seen_uris WHERE first_seen < ?", [cutoff])?
         };
 
         Ok(removed)
