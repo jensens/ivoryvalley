@@ -15,7 +15,6 @@ use axum::{
 use common::{create_temp_dir, TestConfig};
 use ivoryvalley::{config::Config, proxy::create_proxy_router};
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use tokio::net::TcpListener;
 
 /// Mock upstream server for testing
@@ -172,7 +171,9 @@ fn test_proxy_config_creation() {
 #[tokio::test]
 async fn test_proxy_forwards_get_request() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let app = create_proxy_router(config);
 
     let client = axum_test::TestServer::new(app).unwrap();
@@ -190,7 +191,9 @@ async fn test_proxy_forwards_get_request() {
 #[tokio::test]
 async fn test_proxy_passes_auth_header() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let app = create_proxy_router(config);
 
     let client = axum_test::TestServer::new(app).unwrap();
@@ -211,7 +214,9 @@ async fn test_proxy_passes_auth_header() {
 #[tokio::test]
 async fn test_proxy_forwards_post_request() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let app = create_proxy_router(config);
 
     let client = axum_test::TestServer::new(app).unwrap();
@@ -231,7 +236,9 @@ async fn test_proxy_forwards_post_request() {
 #[tokio::test]
 async fn test_proxy_oauth_passthrough() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let app = create_proxy_router(config);
 
     let client = axum_test::TestServer::new(app).unwrap();
@@ -253,7 +260,9 @@ async fn test_proxy_oauth_passthrough() {
 #[tokio::test]
 async fn test_proxy_account_passthrough() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let app = create_proxy_router(config);
 
     let client = axum_test::TestServer::new(app).unwrap();
@@ -271,7 +280,9 @@ async fn test_proxy_account_passthrough() {
 #[tokio::test]
 async fn test_proxy_fallback_passthrough() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let app = create_proxy_router(config);
 
     let client = axum_test::TestServer::new(app).unwrap();
