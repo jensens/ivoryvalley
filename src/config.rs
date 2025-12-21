@@ -177,6 +177,7 @@ impl Config {
 pub struct AppState {
     pub config: Arc<Config>,
     pub http_client: reqwest::Client,
+    pub seen_uri_store: Arc<crate::db::SeenUriStore>,
 }
 
 impl AppState {
@@ -187,9 +188,13 @@ impl AppState {
             .build()
             .expect("Failed to create HTTP client");
 
+        let seen_uri_store = crate::db::SeenUriStore::open(&config.database_path)
+            .expect("Failed to open seen URI store");
+
         Self {
             config: Arc::new(config),
             http_client,
+            seen_uri_store: Arc::new(seen_uri_store),
         }
     }
 }
