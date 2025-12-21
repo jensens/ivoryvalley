@@ -1,2 +1,5 @@
 .worktrees/
 .mcp.json
+
+# Rust
+/target
