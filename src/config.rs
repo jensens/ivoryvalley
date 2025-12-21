@@ -188,8 +188,15 @@ impl AppState {
             .build()
             .expect("Failed to create HTTP client");
 
-        let seen_uri_store = crate::db::SeenUriStore::open(&config.database_path)
-            .expect("Failed to open seen URI store");
+        let seen_uri_store =
+            crate::db::SeenUriStore::open(&config.database_path).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to open seen URI store at '{}': {}. \
+                    Please ensure the database directory exists and is writable.",
+                    config.database_path.display(),
+                    e
+                )
+            });
 
         Self {
             config: Arc::new(config),

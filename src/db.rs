@@ -31,6 +31,26 @@ pub fn extract_dedup_uri(status: &Value) -> Option<&str> {
 ///
 /// Uses SQLite with WAL mode for concurrent read access and durability.
 /// Thread-safe via internal Mutex.
+///
+/// # Performance Considerations
+///
+/// The internal Mutex serializes all database access, which may become a bottleneck
+/// under high concurrency. However, this design ensures:
+/// - Simple, correct thread-safety without complex synchronization
+/// - Atomic check-and-mark operations to prevent race conditions
+/// - Consistent state across all operations
+///
+/// SQLite with WAL mode supports concurrent reads, but the Mutex prevents taking
+/// advantage of this. For most use cases, the serialization overhead is acceptable
+/// because:
+/// - Database operations are fast (indexed lookups and inserts)
+/// - The critical section is small (just the DB operation, not the HTTP handling)
+/// - Timeline filtering is done after receiving the upstream response
+///
+/// If profiling shows this to be a bottleneck, consider:
+/// - Using a connection pool with r2d2 or deadpool
+/// - Exploring rusqlite's multithreaded mode with shared cache
+/// - Using a separate read-only connection for is_seen queries
 pub struct SeenUriStore {
     conn: Mutex<Connection>,
 }
@@ -66,7 +86,10 @@ impl SeenUriStore {
 
     /// Checks if a URI has been seen before.
     pub fn is_seen(&self, uri: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect(
+            "SeenUriStore mutex poisoned. This indicates a panic occurred \
+            while holding the lock. The application should be restarted.",
+        );
         let mut stmt = conn.prepare_cached("SELECT 1 FROM seen_uris WHERE uri = ?")?;
         let exists = stmt.exists([uri])?;
         Ok(exists)
@@ -81,7 +104,10 @@ impl SeenUriStore {
             .expect("Time went backwards")
             .as_secs() as i64;
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect(
+            "SeenUriStore mutex poisoned. This indicates a panic occurred \
+            while holding the lock. The application should be restarted.",
+        );
         conn.execute(
             "INSERT OR IGNORE INTO seen_uris (uri, first_seen) VALUES (?, ?)",
             (uri, now),
@@ -100,7 +126,10 @@ impl SeenUriStore {
             .expect("Time went backwards")
             .as_secs() as i64;
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect(
+            "SeenUriStore mutex poisoned. This indicates a panic occurred \
+            while holding the lock. The application should be restarted.",
+        );
 
         // Try to insert; if it already exists, the INSERT OR IGNORE does nothing
         let rows_changed = conn.execute(
@@ -118,7 +147,10 @@ impl SeenUriStore {
     /// If max_age_secs is 0, removes all entries.
     /// Returns the number of removed entries.
     pub fn cleanup(&self, max_age_secs: u64) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect(
+            "SeenUriStore mutex poisoned. This indicates a panic occurred \
+            while holding the lock. The application should be restarted.",
+        );
         let removed = if max_age_secs == 0 {
             // Special case: remove all entries
             conn.execute("DELETE FROM seen_uris", [])?
