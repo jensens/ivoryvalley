@@ -1,0 +1,18 @@
+{
+  "id": "789012",
+  "uri": "https://mastodon.social/users/booster/statuses/789012",
+  "content": "",
+  "account": {
+    "id": "2",
+    "username": "booster"
+  },
+  "reblog": {
+    "id": "123456",
+    "uri": "https://fosstodon.org/users/original/statuses/123456",
+    "content": "<p>Original post content</p>",
+    "account": {
+      "id": "3",
+      "username": "original"
+    }
+  }
+}

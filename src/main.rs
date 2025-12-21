@@ -1,10 +1,5 @@
-mod config;
-mod db;
-mod proxy;
-mod websocket;
-
-use config::Config;
-use proxy::create_proxy_router;
+use ivoryvalley::config::Config;
+use ivoryvalley::proxy::create_proxy_router;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 

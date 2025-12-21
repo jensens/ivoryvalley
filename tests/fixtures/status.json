@@ -1,0 +1,9 @@
+{
+  "id": "123456",
+  "uri": "https://mastodon.social/users/testuser/statuses/123456",
+  "content": "<p>Hello, world!</p>",
+  "account": {
+    "id": "1",
+    "username": "testuser"
+  }
+}
