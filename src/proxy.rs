@@ -8,10 +8,13 @@ use axum::{
     extract::{Request, State},
     http::{header, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
+    routing::get,
     Router,
 };
 
 use crate::config::{AppState, Config};
+use crate::db::SeenUriStore;
+use crate::websocket::{streaming_handler, WebSocketState};
 
 /// Headers that should be passed through from client to upstream
 const PASSTHROUGH_HEADERS: &[&str] = &[
@@ -27,10 +30,17 @@ const PASSTHROUGH_HEADERS: &[&str] = &[
 const STRIP_HEADERS: &[&str] = &["host", "connection", "transfer-encoding"];
 
 /// Create the proxy router with all routes
-pub fn create_proxy_router(config: Config) -> Router {
-    let state = AppState::new(config);
+pub fn create_proxy_router(config: Config, seen_store: SeenUriStore) -> Router {
+    let app_state = AppState::new(config);
+    let ws_state = WebSocketState::new(app_state.clone(), seen_store);
 
-    Router::new().fallback(proxy_handler).with_state(state)
+    Router::new()
+        // WebSocket streaming endpoint
+        .route("/api/v1/streaming", get(streaming_handler))
+        .with_state(ws_state)
+        // HTTP proxy fallback for all other routes
+        .fallback(proxy_handler)
+        .with_state(app_state)
 }
 
 /// Main proxy handler that forwards all requests to the upstream server
