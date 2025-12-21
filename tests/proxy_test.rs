@@ -13,7 +13,7 @@ use axum::{
     Router,
 };
 use common::{create_temp_dir, TestConfig};
-use ivoryvalley::{config::Config, proxy::create_proxy_router};
+use ivoryvalley::{config::Config, db::SeenUriStore, proxy::create_proxy_router};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
@@ -173,7 +173,8 @@ fn test_proxy_config_creation() {
 async fn test_proxy_forwards_get_request() {
     let upstream = MockUpstream::start().await;
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
     let response = client
@@ -191,7 +192,8 @@ async fn test_proxy_forwards_get_request() {
 async fn test_proxy_passes_auth_header() {
     let upstream = MockUpstream::start().await;
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -212,7 +214,8 @@ async fn test_proxy_passes_auth_header() {
 async fn test_proxy_forwards_post_request() {
     let upstream = MockUpstream::start().await;
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
     let response = client
@@ -232,7 +235,8 @@ async fn test_proxy_forwards_post_request() {
 async fn test_proxy_oauth_passthrough() {
     let upstream = MockUpstream::start().await;
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
     let response = client
@@ -254,7 +258,8 @@ async fn test_proxy_oauth_passthrough() {
 async fn test_proxy_account_passthrough() {
     let upstream = MockUpstream::start().await;
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
     let response = client
@@ -272,7 +277,8 @@ async fn test_proxy_account_passthrough() {
 async fn test_proxy_fallback_passthrough() {
     let upstream = MockUpstream::start().await;
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
     let response = client

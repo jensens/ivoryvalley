@@ -1,4 +1,5 @@
 use ivoryvalley::config::Config;
+use ivoryvalley::db::SeenUriStore;
 use ivoryvalley::proxy::create_proxy_router;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -22,8 +23,12 @@ async fn main() {
     tracing::info!("  Listening on: {}", config.bind_addr());
     tracing::info!("  Database: {}", config.database_path.display());
 
+    // Open the seen URI store for deduplication
+    let seen_store =
+        SeenUriStore::open(&config.database_path).expect("Failed to open seen URI store");
+
     // Create the router
-    let app = create_proxy_router(config.clone());
+    let app = create_proxy_router(config.clone(), seen_store);
 
     // Bind and serve
     let listener = TcpListener::bind(config.bind_addr())
