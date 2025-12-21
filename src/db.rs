@@ -90,6 +90,29 @@ impl SeenUriStore {
         Ok(())
     }
 
+    /// Atomically checks if a URI has been seen and marks it as seen if not.
+    ///
+    /// Returns `true` if the URI was already seen, `false` if it was newly marked.
+    /// This avoids the race condition between separate is_seen() and mark_seen() calls.
+    pub fn check_and_mark(&self, uri: &str) -> Result<bool> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs() as i64;
+
+        let conn = self.conn.lock().unwrap();
+
+        // Try to insert; if it already exists, the INSERT OR IGNORE does nothing
+        let rows_changed = conn.execute(
+            "INSERT OR IGNORE INTO seen_uris (uri, first_seen) VALUES (?, ?)",
+            (uri, now),
+        )?;
+
+        // If rows_changed is 0, the URI already existed (was seen before)
+        // If rows_changed is 1, we just inserted it (first time seeing it)
+        Ok(rows_changed == 0)
+    }
+
     /// Removes URIs older than max_age_secs.
     ///
     /// If max_age_secs is 0, removes all entries.
@@ -127,6 +150,22 @@ mod tests {
 
         assert!(!store.is_seen(uri).unwrap());
         store.mark_seen(uri).unwrap();
+        assert!(store.is_seen(uri).unwrap());
+    }
+
+    #[test]
+    fn test_check_and_mark_atomic() {
+        let store = SeenUriStore::open(":memory:").unwrap();
+
+        let uri = "https://example.com/status/456";
+
+        // First call: URI not seen, should return false (newly marked)
+        assert!(!store.check_and_mark(uri).unwrap());
+
+        // Second call: URI was seen, should return true
+        assert!(store.check_and_mark(uri).unwrap());
+
+        // Verify it's actually in the store
         assert!(store.is_seen(uri).unwrap());
     }
 

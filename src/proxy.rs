@@ -145,16 +145,14 @@ fn filter_timeline_response(body: &[u8], state: &AppState) -> Vec<u8> {
         .filter(|status| {
             // Extract the deduplication URI
             if let Some(uri) = extract_dedup_uri(status) {
-                // Check if we've seen this URI before
-                let is_seen = state.seen_uri_store.is_seen(uri).unwrap_or(false);
-
-                if is_seen {
-                    // Already seen, filter it out
-                    false
-                } else {
-                    // Mark as seen for future requests
-                    let _ = state.seen_uri_store.mark_seen(uri);
-                    true
+                // Atomically check if seen and mark as seen
+                match state.seen_uri_store.check_and_mark(uri) {
+                    Ok(was_seen) => !was_seen,
+                    Err(e) => {
+                        tracing::warn!("Failed to check/mark URI {}: {}", uri, e);
+                        // On error, pass through the status
+                        true
+                    }
                 }
             } else {
                 // No URI to deduplicate on, pass through
