@@ -6,7 +6,13 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(gh issue comment:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(cargo init:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cd:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(gh run view:*)"
     ],
     "deny": [],
     "ask": []
