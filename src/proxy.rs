@@ -133,13 +133,19 @@ fn filter_timeline_response(body: &[u8], state: &AppState) -> Vec<u8> {
     // Try to parse the body as a JSON array of statuses
     let statuses: Vec<serde_json::Value> = match serde_json::from_slice(body) {
         Ok(v) => v,
-        Err(_) => {
+        Err(e) => {
+            tracing::debug!("Failed to parse timeline response as JSON array: {}", e);
             // If we can't parse it, just pass through unchanged
             return body.to_vec();
         }
     };
 
+    let original_count = statuses.len();
+    tracing::debug!("Processing {} statuses for deduplication", original_count);
+
     // Filter out statuses we've already seen
+    let mut filtered_count = 0;
+    let mut error_count = 0;
     let filtered: Vec<&serde_json::Value> = statuses
         .iter()
         .filter(|status| {
@@ -147,22 +153,47 @@ fn filter_timeline_response(body: &[u8], state: &AppState) -> Vec<u8> {
             if let Some(uri) = extract_dedup_uri(status) {
                 // Atomically check if seen and mark as seen
                 match state.seen_uri_store.check_and_mark(uri) {
-                    Ok(was_seen) => !was_seen,
+                    Ok(was_seen) => {
+                        if was_seen {
+                            tracing::debug!("Filtered duplicate status with URI: {}", uri);
+                            filtered_count += 1;
+                            false
+                        } else {
+                            tracing::trace!("Allowing new status with URI: {}", uri);
+                            true
+                        }
+                    }
                     Err(e) => {
                         tracing::warn!("Failed to check/mark URI {}: {}", uri, e);
+                        error_count += 1;
                         // On error, pass through the status
                         true
                     }
                 }
             } else {
                 // No URI to deduplicate on, pass through
+                tracing::trace!("Allowing status without URI field");
                 true
             }
         })
         .collect();
 
+    let final_count = filtered.len();
+    if filtered_count > 0 || error_count > 0 {
+        tracing::info!(
+            "Timeline filtering: {} total, {} filtered, {} passed, {} errors",
+            original_count,
+            filtered_count,
+            final_count,
+            error_count
+        );
+    }
+
     // Serialize the filtered list back to JSON
-    serde_json::to_vec(&filtered).unwrap_or_else(|_| body.to_vec())
+    serde_json::to_vec(&filtered).unwrap_or_else(|e| {
+        tracing::error!("Failed to serialize filtered timeline: {}", e);
+        body.to_vec()
+    })
 }
 
 /// Build headers to send to upstream, filtering and transforming as needed
