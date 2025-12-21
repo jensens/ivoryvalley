@@ -181,20 +181,20 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Create a new application state from configuration
-    pub fn new(config: Config) -> Self {
+    /// Create a new application state from configuration and seen URI store.
+    ///
+    /// The `SeenUriStore` is wrapped in an `Arc` so it can be shared with other
+    /// components (e.g., WebSocket handlers) that also need deduplication.
+    pub fn new(config: Config, seen_store: Arc<crate::db::SeenUriStore>) -> Self {
         let http_client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("Failed to create HTTP client");
 
-        let seen_uri_store = crate::db::SeenUriStore::open(&config.database_path)
-            .expect("Failed to open seen URI store");
-
         Self {
             config: Arc::new(config),
             http_client,
-            seen_uri_store: Arc::new(seen_uri_store),
+            seen_uri_store: seen_store,
         }
     }
 }
