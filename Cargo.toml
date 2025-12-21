@@ -28,7 +28,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Configuration
-config = "0.14"
+config = { version = "0.14", features = ["toml", "yaml"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 [dev-dependencies]
 # Async test runtime
