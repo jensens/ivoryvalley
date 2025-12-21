@@ -15,7 +15,6 @@ use axum::{
 use common::{create_temp_dir, TestConfig};
 use ivoryvalley::{config::Config, db::SeenUriStore, proxy::create_proxy_router};
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use tokio::net::TcpListener;
 
 /// Mock upstream server for testing
@@ -172,7 +171,9 @@ fn test_proxy_config_creation() {
 #[tokio::test]
 async fn test_proxy_forwards_get_request() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
     let app = create_proxy_router(config, seen_store);
 
@@ -191,7 +192,9 @@ async fn test_proxy_forwards_get_request() {
 #[tokio::test]
 async fn test_proxy_passes_auth_header() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
     let app = create_proxy_router(config, seen_store);
 
@@ -213,7 +216,9 @@ async fn test_proxy_passes_auth_header() {
 #[tokio::test]
 async fn test_proxy_forwards_post_request() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
     let app = create_proxy_router(config, seen_store);
 
@@ -234,7 +239,9 @@ async fn test_proxy_forwards_post_request() {
 #[tokio::test]
 async fn test_proxy_oauth_passthrough() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
     let app = create_proxy_router(config, seen_store);
 
@@ -257,7 +264,9 @@ async fn test_proxy_oauth_passthrough() {
 #[tokio::test]
 async fn test_proxy_account_passthrough() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
     let app = create_proxy_router(config, seen_store);
 
@@ -276,7 +285,9 @@ async fn test_proxy_account_passthrough() {
 #[tokio::test]
 async fn test_proxy_fallback_passthrough() {
     let upstream = MockUpstream::start().await;
-    let config = Config::new(&upstream.url(), "0.0.0.0", 0, PathBuf::from("test.db"));
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
     let app = create_proxy_router(config, seen_store);
 
@@ -295,8 +306,6 @@ async fn test_proxy_fallback_passthrough() {
 // =============================================================================
 // Timeline filtering tests
 // =============================================================================
-
-use ivoryvalley::SeenUriStore;
 
 /// Mock upstream server that returns timeline with statuses
 struct MockTimelineUpstream {
@@ -393,7 +402,8 @@ async fn test_timeline_first_status_passes_through() {
     let temp_dir = create_temp_dir();
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
     let response = client
@@ -422,7 +432,8 @@ async fn test_timeline_duplicates_are_filtered() {
     let temp_dir = create_temp_dir();
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -448,20 +459,14 @@ async fn test_timeline_duplicates_are_filtered() {
 /// Test that boosts are deduplicated based on the original content URI.
 #[tokio::test]
 async fn test_timeline_boost_deduplication() {
-    // First, see the original post
-    let original_statuses = r#"[
-        {"id": "1", "uri": "https://original.com/statuses/1", "content": "<p>Original</p>", "reblog": null}
-    ]"#;
-
-    let upstream = MockTimelineUpstream::start_with_statuses(original_statuses).await;
     let temp_dir = create_temp_dir();
     let db_path = temp_dir.path().join("test.db");
 
-    // First, mark the original as seen
-    {
-        let store = SeenUriStore::open(&db_path).unwrap();
-        store.mark_seen("https://original.com/statuses/1").unwrap();
-    }
+    // Create and pre-populate the store with the original URI
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    seen_store
+        .mark_seen("https://original.com/statuses/1")
+        .unwrap();
 
     // Now test with a boost of the same content
     let boost_statuses = r#"[
@@ -477,11 +482,9 @@ async fn test_timeline_boost_deduplication() {
         }
     ]"#;
 
-    // Need a new upstream for the boost
-    drop(upstream);
     let upstream = MockTimelineUpstream::start_with_statuses(boost_statuses).await;
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
-    let app = create_proxy_router(config);
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
     let response = client
@@ -506,7 +509,8 @@ async fn test_timeline_public_filtering() {
     let temp_dir = create_temp_dir();
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -534,7 +538,8 @@ async fn test_timeline_list_filtering() {
     let temp_dir = create_temp_dir();
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -562,7 +567,8 @@ async fn test_timeline_hashtag_filtering() {
     let temp_dir = create_temp_dir();
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -590,7 +596,8 @@ async fn test_timeline_status_without_uri_passes_through() {
     let temp_dir = create_temp_dir();
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
-    let app = create_proxy_router(config);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
 
     let client = axum_test::TestServer::new(app).unwrap();
 
