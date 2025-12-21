@@ -59,16 +59,15 @@ Outgoing:   GET /api/v1/timelines/home HTTP/1.1
 
 ### Header Transformation
 
-```python
-def transform_request(request, upstream_host):
-    # Replace Host header with upstream
-    headers = dict(request.headers)
+```
+function transform_request(request, upstream_host):
+    headers = copy(request.headers)
     headers['Host'] = upstream_host
 
-    # Forward authentication unchanged
-    # See: authentication-passthrough.md
+    // Forward authentication unchanged
+    // See: authentication-passthrough.md
 
-    # Add proxy identification (optional)
+    // Add proxy identification (optional)
     headers['X-Forwarded-For'] = request.client_ip
     headers['X-Forwarded-Proto'] = 'https'
 
@@ -140,16 +139,16 @@ After receiving the upstream response, the proxy can:
 2. **Cache responses** - Reduce upstream calls for repeated data
 3. **Transform responses** - Add metadata, filter content
 
-```python
-def process_response(response, request_path):
+```
+function process_response(response, request_path):
     if is_timeline_endpoint(request_path):
-        # Apply deduplication
-        statuses = json.loads(response.body)
+        // Apply deduplication
+        statuses = parse_json(response.body)
         for status in statuses:
             store_unique_content(status)
         return response
 
-    # Other endpoints: passthrough
+    // Other endpoints: passthrough
     return response
 ```
 
@@ -173,31 +172,27 @@ The Mastodon Streaming API uses WebSocket connections for real-time updates.
 
 **Approach: Bidirectional relay with event inspection**
 
-```python
+```
 class StreamingProxy:
-    async def handle_connection(self, client_ws, upstream_url):
-        # Connect to upstream
-        async with websocket.connect(upstream_url) as upstream_ws:
-            # Relay messages bidirectionally
-            await asyncio.gather(
-                self.relay_client_to_upstream(client_ws, upstream_ws),
-                self.relay_upstream_to_client(upstream_ws, client_ws)
-            )
+    function handle_connection(client_ws, upstream_url):
+        upstream_ws = websocket_connect(upstream_url)
 
-    async def relay_upstream_to_client(self, upstream_ws, client_ws):
-        async for message in upstream_ws:
-            # Process streaming events
+        // Relay messages bidirectionally (concurrent)
+        parallel:
+            relay_client_to_upstream(client_ws, upstream_ws)
+            relay_upstream_to_client(upstream_ws, client_ws)
+
+    function relay_upstream_to_client(upstream_ws, client_ws):
+        for each message from upstream_ws:
             event = parse_streaming_event(message)
             if event.type == 'update':
-                # Store content for deduplication
                 store_unique_content(event.payload)
-            # Forward to client
-            await client_ws.send(message)
+            client_ws.send(message)
 
-    async def relay_client_to_upstream(self, client_ws, upstream_ws):
-        async for message in client_ws:
-            # Forward subscription commands unchanged
-            await upstream_ws.send(message)
+    function relay_client_to_upstream(client_ws, upstream_ws):
+        for each message from client_ws:
+            // Forward subscription commands unchanged
+            upstream_ws.send(message)
 ```
 
 ### Streaming Discovery
@@ -221,12 +216,12 @@ Response includes:
 
 **Proxy must intercept this response** and rewrite the streaming URL to point back to the proxy:
 
-```python
-def rewrite_instance_response(response, proxy_streaming_url):
-    data = json.loads(response.body)
+```
+function rewrite_instance_response(response, proxy_streaming_url):
+    data = parse_json(response.body)
     if 'configuration' in data and 'urls' in data['configuration']:
         data['configuration']['urls']['streaming'] = proxy_streaming_url
-    return json.dumps(data)
+    return to_json(data)
 ```
 
 ### Authentication for Streaming
@@ -245,10 +240,10 @@ The proxy forwards authentication headers unchanged (see [authentication-passthr
 
 For REST API calls, maintain a connection pool to the upstream server:
 
-```python
+```
 class UpstreamPool:
-    def __init__(self, upstream_host, max_connections=100):
-        self.pool = aiohttp.TCPConnector(
+    function init(upstream_host, max_connections=100):
+        this.pool = create_connection_pool(
             limit=max_connections,
             keepalive_timeout=30
         )
@@ -260,10 +255,10 @@ class UpstreamPool:
 - Handle reconnection with exponential backoff
 - Clean up when client disconnects
 
-```python
-async def handle_disconnect(client_ws, upstream_ws):
-    await upstream_ws.close()
-    # Clean up any client-specific state
+```
+function handle_disconnect(client_ws, upstream_ws):
+    upstream_ws.close()
+    // Clean up any client-specific state
 ```
 
 ## Error Handling
