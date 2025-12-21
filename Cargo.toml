@@ -29,3 +29,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Configuration
 config = "0.14"
+
+[dev-dependencies]
+# Async test runtime
+tokio-test = "0.4"
+
+# Temporary directories for tests
+tempfile = "3"
+
+# HTTP testing utilities
+axum-test = "17"
+
+# Better test assertions
+pretty_assertions = "1"
