@@ -19,21 +19,13 @@ async fn main() {
         )
         .init();
 
-    // Load configuration (for now, use defaults)
-    // TODO: Load from config file or environment variables
-    let upstream_url =
-        std::env::var("UPSTREAM_URL").unwrap_or_else(|_| "https://mastodon.social".to_string());
-    let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port: u16 = std::env::var("PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8080);
-
-    let config = Config::new(&upstream_url, &host, port);
+    // Load configuration from CLI args, environment variables, and config file
+    let config = Config::load().expect("Failed to load configuration");
 
     tracing::info!("Starting IvoryValley proxy");
     tracing::info!("  Upstream: {}", config.upstream_url);
     tracing::info!("  Listening on: {}", config.bind_addr());
+    tracing::info!("  Database: {}", config.database_path.display());
 
     // Create the router
     let app = create_proxy_router(config.clone());
