@@ -90,8 +90,11 @@ async fn mock_ws_handler(ws: WebSocketUpgrade, State(state): State<MockWsState>)
 async fn handle_mock_ws(socket: WebSocket, state: MockWsState) {
     let (mut sender, mut receiver) = socket.split();
 
-    // Send any queued messages
-    let messages = state.messages_to_send.lock().await.clone();
+    // Send any queued messages, draining to avoid cloning
+    let messages = {
+        let mut locked = state.messages_to_send.lock().await;
+        std::mem::take(&mut *locked)
+    };
     for msg in messages {
         if sender.send(Message::Text(msg.into())).await.is_err() {
             return;
@@ -277,9 +280,22 @@ async fn test_websocket_deduplication() {
     let upstream = MockUpstreamWs::start().await;
 
     // Queue two identical update events
-    let status_event = r#"{"event":"update","payload":"{\"id\":\"123\",\"uri\":\"https://example.com/status/123\"}"}"#;
-    upstream.queue_message(status_event.to_string()).await;
-    upstream.queue_message(status_event.to_string()).await;
+    // Using a helper to create the event JSON for better readability
+    let create_status_event = || {
+        let payload = serde_json::json!({
+            "id": "123",
+            "uri": "https://example.com/status/123"
+        })
+        .to_string();
+        serde_json::json!({
+            "event": "update",
+            "payload": payload
+        })
+        .to_string()
+    };
+
+    upstream.queue_message(create_status_event()).await;
+    upstream.queue_message(create_status_event()).await;
 
     let temp_dir = create_temp_dir();
     let db_path = temp_dir.path().join("test.db");
