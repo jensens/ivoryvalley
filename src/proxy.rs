@@ -34,11 +34,12 @@ pub fn create_proxy_router(config: Config, seen_store: SeenUriStore) -> Router {
     let app_state = AppState::new(config);
     let ws_state = WebSocketState::new(app_state.clone(), seen_store);
 
+    // The streaming route uses WebSocketState (with SeenUriStore for deduplication).
+    // The fallback HTTP proxy uses AppState. Axum's .with_state() applies to
+    // routes added before that call, so the order here is intentional.
     Router::new()
-        // WebSocket streaming endpoint
         .route("/api/v1/streaming", get(streaming_handler))
         .with_state(ws_state)
-        // HTTP proxy fallback for all other routes
         .fallback(proxy_handler)
         .with_state(app_state)
 }

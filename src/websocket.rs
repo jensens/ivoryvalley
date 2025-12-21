@@ -23,10 +23,28 @@ use tracing::{debug, error, info, warn};
 use crate::config::AppState;
 use crate::db::{extract_dedup_uri, SeenUriStore};
 
-/// Query parameters for WebSocket streaming endpoint
+/// Query parameters for WebSocket streaming endpoint.
+///
+/// # Security Note
+///
+/// The Mastodon streaming API authenticates WebSocket connections via
+/// query parameters (e.g., `?access_token=...`) and does not support
+/// using the `Authorization` header once the WebSocket upgrade has
+/// occurred. This relay mirrors that behavior to remain compatible with
+/// Mastodon clients.
+///
+/// Because query parameters may be logged by proxies and load balancers,
+/// deployments using this module should:
+/// - Use HTTPS between all hops (client → relay → upstream)
+/// - Avoid logging full URLs containing `access_token`
+/// - Prefer short-lived or least-privileged access tokens
 #[derive(Debug, Deserialize)]
 pub struct StreamingParams {
-    /// Access token for authentication (not recommended but supported)
+    /// Access token for authentication.
+    ///
+    /// Accepted as a query parameter to remain compatible with the Mastodon
+    /// streaming API, which authenticates WebSocket streams using query
+    /// parameters only.
     pub access_token: Option<String>,
     /// Stream type (user, public, etc.)
     pub stream: Option<String>,
@@ -79,6 +97,9 @@ async fn handle_streaming(
 
     info!("Connecting to upstream: {}", upstream_ws_url);
 
+    // Split client connection early so we can send error if upstream fails
+    let (mut client_sink, client_stream) = client_ws.split();
+
     // Connect to upstream
     let upstream_result = connect_async(&upstream_ws_url).await;
 
@@ -86,25 +107,37 @@ async fn handle_streaming(
         Ok(conn) => conn,
         Err(e) => {
             error!("Failed to connect to upstream WebSocket: {}", e);
+            // Send close frame to client with error reason
+            let close_frame = axum::extract::ws::CloseFrame {
+                code: 1014, // Bad Gateway equivalent
+                reason: "Failed to connect to upstream server".into(),
+            };
+            let _ = client_sink.send(Message::Close(Some(close_frame))).await;
             return;
         }
     };
 
     info!("Connected to upstream WebSocket");
 
-    // Split both connections
-    let (mut client_sink, mut client_stream) = client_ws.split();
+    // Split upstream connection
     let (mut upstream_sink, mut upstream_stream) = upstream_ws.split();
 
-    // Create channels for message passing
+    // Create channels for message passing.
+    // Buffer size of 32 is a deliberate compromise:
+    // - Mastodon streaming events arrive at a modest rate
+    // - Small bounded buffer smooths short bursts without unbounded memory growth
+    // - Backpressure is acceptable: slowing relay is preferable to unbounded buffering
     let (client_tx, mut client_rx) = mpsc::channel::<Message>(32);
     let (upstream_tx, mut upstream_rx) = mpsc::channel::<tungstenite::Message>(32);
+
+    // Wrap client_stream in an Option for move into task
+    let mut client_stream = Some(client_stream);
 
     // Clone store for the filtering task
     let filter_store = seen_store.clone();
 
     // Task: Forward filtered messages from upstream to client
-    let upstream_to_client = tokio::spawn(async move {
+    let mut upstream_to_client = tokio::spawn(async move {
         while let Some(msg_result) = upstream_stream.next().await {
             match msg_result {
                 Ok(msg) => {
@@ -127,8 +160,9 @@ async fn handle_streaming(
     });
 
     // Task: Forward messages from client to upstream
-    let client_to_upstream = tokio::spawn(async move {
-        while let Some(msg_result) = client_stream.next().await {
+    let mut client_to_upstream = tokio::spawn(async move {
+        let mut stream = client_stream.take().unwrap();
+        while let Some(msg_result) = stream.next().await {
             match msg_result {
                 Ok(msg) => {
                     // Convert axum Message to tungstenite Message
@@ -148,7 +182,7 @@ async fn handle_streaming(
     });
 
     // Task: Send messages to client
-    let send_to_client = tokio::spawn(async move {
+    let mut send_to_client = tokio::spawn(async move {
         while let Some(msg) = client_rx.recv().await {
             if client_sink.send(msg).await.is_err() {
                 debug!("Failed to send to client");
@@ -158,7 +192,7 @@ async fn handle_streaming(
     });
 
     // Task: Send messages to upstream
-    let send_to_upstream = tokio::spawn(async move {
+    let mut send_to_upstream = tokio::spawn(async move {
         while let Some(msg) = upstream_rx.recv().await {
             if upstream_sink.send(msg).await.is_err() {
                 debug!("Failed to send to upstream");
@@ -167,13 +201,19 @@ async fn handle_streaming(
         }
     });
 
-    // Wait for any task to complete (connection closed)
+    // Wait for any task to complete (connection closed), then abort the rest
     tokio::select! {
-        _ = upstream_to_client => info!("Upstream to client task ended"),
-        _ = client_to_upstream => info!("Client to upstream task ended"),
-        _ = send_to_client => info!("Send to client task ended"),
-        _ = send_to_upstream => info!("Send to upstream task ended"),
+        _ = &mut upstream_to_client => info!("Upstream to client task ended"),
+        _ = &mut client_to_upstream => info!("Client to upstream task ended"),
+        _ = &mut send_to_client => info!("Send to client task ended"),
+        _ = &mut send_to_upstream => info!("Send to upstream task ended"),
     }
+
+    // Abort remaining tasks to prevent resource leaks
+    upstream_to_client.abort();
+    client_to_upstream.abort();
+    send_to_client.abort();
+    send_to_upstream.abort();
 
     info!("WebSocket connection closed");
 }
@@ -187,20 +227,20 @@ fn build_upstream_ws_url(upstream_base: &str, params: &StreamingParams) -> Strin
 
     let mut url = format!("{}/api/v1/streaming", ws_base);
 
-    // Build query string
+    // Build query string with proper URL encoding
     let mut query_parts = Vec::new();
 
     if let Some(ref token) = params.access_token {
-        query_parts.push(format!("access_token={}", token));
+        query_parts.push(format!("access_token={}", urlencoding::encode(token)));
     }
     if let Some(ref stream) = params.stream {
-        query_parts.push(format!("stream={}", stream));
+        query_parts.push(format!("stream={}", urlencoding::encode(stream)));
     }
     if let Some(ref tag) = params.tag {
-        query_parts.push(format!("tag={}", tag));
+        query_parts.push(format!("tag={}", urlencoding::encode(tag)));
     }
     if let Some(ref list) = params.list {
-        query_parts.push(format!("list={}", list));
+        query_parts.push(format!("list={}", urlencoding::encode(list)));
     }
 
     if !query_parts.is_empty() {
