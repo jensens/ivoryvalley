@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__tributary",
+      "Bash(gh pr create:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(gh issue comment:*)",
+      "Bash(git push:*)"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "enableAllProjectMcpServers": true
+}
