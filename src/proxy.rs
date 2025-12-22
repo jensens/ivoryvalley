@@ -281,7 +281,13 @@ impl IntoResponse for ProxyError {
             .status(status)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(format!(r#"{{"error":"{}"}}"#, message)))
-            .unwrap()
+            .unwrap_or_else(|_| {
+                // Fallback: minimal response that always succeeds
+                Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::empty())
+                    .expect("minimal response build should never fail")
+            })
     }
 }
 
@@ -350,5 +356,67 @@ mod tests {
         assert!(!is_timeline_endpoint("/api/v1/statuses"));
         assert!(!is_timeline_endpoint("/api/v1/notifications"));
         assert!(!is_timeline_endpoint("/oauth/token"));
+    }
+
+    #[tokio::test]
+    async fn test_proxy_error_into_response_body_read() {
+        let error = ProxyError::BodyRead("test error".to_string());
+        let response = error.into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains("Body read error"));
+        assert!(body_str.contains("test error"));
+    }
+
+    #[tokio::test]
+    async fn test_proxy_error_into_response_upstream() {
+        let error = ProxyError::Upstream("connection refused".to_string());
+        let response = error.into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains("Upstream error"));
+        assert!(body_str.contains("connection refused"));
+    }
+
+    #[tokio::test]
+    async fn test_proxy_error_into_response_response_read() {
+        let error = ProxyError::ResponseRead("timeout".to_string());
+        let response = error.into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains("Response read error"));
+    }
+
+    #[tokio::test]
+    async fn test_proxy_error_into_response_response_build() {
+        let error = ProxyError::ResponseBuild("invalid header".to_string());
+        let response = error.into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains("Response build error"));
     }
 }
