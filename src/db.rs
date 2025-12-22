@@ -6,6 +6,7 @@
 use rusqlite::{Connection, Result};
 use serde_json::Value;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Extracts the URI to use for deduplication from a Mastodon status.
@@ -29,8 +30,29 @@ pub fn extract_dedup_uri(status: &Value) -> Option<&str> {
 /// Storage for tracking seen message URIs.
 ///
 /// Uses SQLite with WAL mode for concurrent read access and durability.
+/// Thread-safe via internal Mutex.
+///
+/// # Performance Considerations
+///
+/// The internal Mutex serializes all database access, which may become a bottleneck
+/// under high concurrency. However, this design ensures:
+/// - Simple, correct thread-safety without complex synchronization
+/// - Atomic check-and-mark operations to prevent race conditions
+/// - Consistent state across all operations
+///
+/// SQLite with WAL mode supports concurrent reads, but the Mutex prevents taking
+/// advantage of this. For most use cases, the serialization overhead is acceptable
+/// because:
+/// - Database operations are fast (indexed lookups and inserts)
+/// - The critical section is small (just the DB operation, not the HTTP handling)
+/// - Timeline filtering is done after receiving the upstream response
+///
+/// If profiling shows this to be a bottleneck, consider:
+/// - Using a connection pool with r2d2 or deadpool
+/// - Exploring rusqlite's multithreaded mode with shared cache
+/// - Using a separate read-only connection for is_seen queries
 pub struct SeenUriStore {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl SeenUriStore {
@@ -57,14 +79,18 @@ impl SeenUriStore {
             [],
         )?;
 
-        Ok(Self { conn })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Checks if a URI has been seen before.
     pub fn is_seen(&self, uri: &str) -> Result<bool> {
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT 1 FROM seen_uris WHERE uri = ?")?;
+        let conn = self.conn.lock().expect(
+            "SeenUriStore mutex poisoned. This indicates a panic occurred \
+            while holding the lock. The application should be restarted.",
+        );
+        let mut stmt = conn.prepare_cached("SELECT 1 FROM seen_uris WHERE uri = ?")?;
         let exists = stmt.exists([uri])?;
         Ok(exists)
     }
@@ -78,7 +104,11 @@ impl SeenUriStore {
             .expect("Time went backwards")
             .as_secs() as i64;
 
-        self.conn.execute(
+        let conn = self.conn.lock().expect(
+            "SeenUriStore mutex poisoned. This indicates a panic occurred \
+            while holding the lock. The application should be restarted.",
+        );
+        conn.execute(
             "INSERT OR IGNORE INTO seen_uris (uri, first_seen) VALUES (?, ?)",
             (uri, now),
         )?;
@@ -86,14 +116,44 @@ impl SeenUriStore {
         Ok(())
     }
 
+    /// Atomically checks if a URI has been seen and marks it as seen if not.
+    ///
+    /// Returns `true` if the URI was already seen, `false` if it was newly marked.
+    /// This avoids the race condition between separate is_seen() and mark_seen() calls.
+    pub fn check_and_mark(&self, uri: &str) -> Result<bool> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs() as i64;
+
+        let conn = self.conn.lock().expect(
+            "SeenUriStore mutex poisoned. This indicates a panic occurred \
+            while holding the lock. The application should be restarted.",
+        );
+
+        // Try to insert; if it already exists, the INSERT OR IGNORE does nothing
+        let rows_changed = conn.execute(
+            "INSERT OR IGNORE INTO seen_uris (uri, first_seen) VALUES (?, ?)",
+            (uri, now),
+        )?;
+
+        // If rows_changed is 0, the URI already existed (was seen before)
+        // If rows_changed is 1, we just inserted it (first time seeing it)
+        Ok(rows_changed == 0)
+    }
+
     /// Removes URIs older than max_age_secs.
     ///
     /// If max_age_secs is 0, removes all entries.
     /// Returns the number of removed entries.
     pub fn cleanup(&self, max_age_secs: u64) -> Result<usize> {
+        let conn = self.conn.lock().expect(
+            "SeenUriStore mutex poisoned. This indicates a panic occurred \
+            while holding the lock. The application should be restarted.",
+        );
         let removed = if max_age_secs == 0 {
             // Special case: remove all entries
-            self.conn.execute("DELETE FROM seen_uris", [])?
+            conn.execute("DELETE FROM seen_uris", [])?
         } else {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -102,8 +162,7 @@ impl SeenUriStore {
 
             let cutoff = now - (max_age_secs as i64);
 
-            self.conn
-                .execute("DELETE FROM seen_uris WHERE first_seen < ?", [cutoff])?
+            conn.execute("DELETE FROM seen_uris WHERE first_seen < ?", [cutoff])?
         };
 
         Ok(removed)
@@ -123,6 +182,22 @@ mod tests {
 
         assert!(!store.is_seen(uri).unwrap());
         store.mark_seen(uri).unwrap();
+        assert!(store.is_seen(uri).unwrap());
+    }
+
+    #[test]
+    fn test_check_and_mark_atomic() {
+        let store = SeenUriStore::open(":memory:").unwrap();
+
+        let uri = "https://example.com/status/456";
+
+        // First call: URI not seen, should return false (newly marked)
+        assert!(!store.check_and_mark(uri).unwrap());
+
+        // Second call: URI was seen, should return true
+        assert!(store.check_and_mark(uri).unwrap());
+
+        // Verify it's actually in the store
         assert!(store.is_seen(uri).unwrap());
     }
 

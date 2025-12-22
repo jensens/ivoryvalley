@@ -13,8 +13,9 @@ use axum::{
 };
 
 use crate::config::{AppState, Config};
-use crate::db::SeenUriStore;
+use crate::db::{extract_dedup_uri, SeenUriStore};
 use crate::websocket::{streaming_handler, WebSocketState};
+use std::sync::Arc;
 
 /// Headers that should be passed through from client to upstream
 const PASSTHROUGH_HEADERS: &[&str] = &[
@@ -29,9 +30,30 @@ const PASSTHROUGH_HEADERS: &[&str] = &[
 /// Headers that should NOT be forwarded
 const STRIP_HEADERS: &[&str] = &["host", "connection", "transfer-encoding"];
 
+/// Timeline endpoint prefixes that should have deduplication applied
+const TIMELINE_ENDPOINTS: &[&str] = &[
+    "/api/v1/timelines/home",
+    "/api/v1/timelines/public",
+    "/api/v1/timelines/list/",
+    "/api/v1/timelines/tag/",
+];
+
+/// Check if the given path is a timeline endpoint that should be filtered
+fn is_timeline_endpoint(path: &str) -> bool {
+    // Extract just the path without query parameters
+    let path_only = path.split('?').next().unwrap_or(path);
+
+    TIMELINE_ENDPOINTS
+        .iter()
+        .any(|prefix| path_only.starts_with(prefix))
+}
+
 /// Create the proxy router with all routes
 pub fn create_proxy_router(config: Config, seen_store: SeenUriStore) -> Router {
-    let app_state = AppState::new(config);
+    // Wrap the store in Arc to share between HTTP proxy and WebSocket handlers
+    let seen_store = Arc::new(seen_store);
+
+    let app_state = AppState::new(config, seen_store.clone());
     let ws_state = WebSocketState::new(app_state.clone(), seen_store);
 
     // The streaming route uses WebSocketState (with SeenUriStore for deduplication).
@@ -55,6 +77,9 @@ async fn proxy_handler(
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or("/");
+
+    // Determine if this is a timeline endpoint that should be filtered
+    let should_filter = method == Method::GET && is_timeline_endpoint(path);
 
     // Build the upstream URL
     let upstream_url = format!("{}{}", state.config.upstream_url, path);
@@ -92,19 +117,100 @@ async fn proxy_handler(
         .await
         .map_err(|e| ProxyError::ResponseRead(e.to_string()))?;
 
+    // Filter timeline responses if applicable
+    let final_body = if should_filter && status.is_success() {
+        filter_timeline_response(&body, &state)
+    } else {
+        body.to_vec()
+    };
+
     // Build the response
     let mut response = Response::builder().status(status);
 
-    // Forward response headers
+    // Forward response headers (except Content-Length which may have changed)
     for (name, value) in response_headers.iter() {
-        if !STRIP_HEADERS.contains(&name.as_str().to_lowercase().as_str()) {
+        let name_lower = name.as_str().to_lowercase();
+        if !STRIP_HEADERS.contains(&name_lower.as_str()) && name_lower != "content-length" {
             response = response.header(name, value);
         }
     }
 
     response
-        .body(Body::from(body))
+        .body(Body::from(final_body))
         .map_err(|e| ProxyError::ResponseBuild(e.to_string()))
+}
+
+/// Filter a timeline response, removing statuses that have already been seen.
+///
+/// Returns the filtered JSON as bytes. If parsing fails, returns the original body unchanged.
+fn filter_timeline_response(body: &[u8], state: &AppState) -> Vec<u8> {
+    // Try to parse the body as a JSON array of statuses
+    let statuses: Vec<serde_json::Value> = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!("Failed to parse timeline response as JSON array: {}", e);
+            // If we can't parse it, just pass through unchanged
+            return body.to_vec();
+        }
+    };
+
+    let original_count = statuses.len();
+    tracing::debug!("Processing {} statuses for deduplication", original_count);
+
+    // Filter out statuses we've already seen
+    let mut filtered = Vec::new();
+    let mut filtered_count = 0;
+    let mut error_count = 0;
+
+    for status in statuses {
+        // Extract the deduplication URI
+        let should_include = if let Some(uri) = extract_dedup_uri(&status) {
+            // Atomically check if seen and mark as seen
+            match state.seen_uri_store.check_and_mark(uri) {
+                Ok(was_seen) => {
+                    if was_seen {
+                        tracing::debug!("Filtered duplicate status with URI: {}", uri);
+                        filtered_count += 1;
+                        false
+                    } else {
+                        tracing::trace!("Allowing new status with URI: {}", uri);
+                        true
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to check/mark URI {}: {}", uri, e);
+                    error_count += 1;
+                    // On error, pass through the status
+                    true
+                }
+            }
+        } else {
+            // No URI to deduplicate on, pass through
+            tracing::trace!("Allowing status without URI field");
+            true
+        };
+
+        if should_include {
+            filtered.push(status);
+        }
+    }
+
+    let final_count = filtered.len();
+    if filtered_count > 0 || error_count > 0 {
+        tracing::info!(
+            "Timeline filtering: {} total, {} filtered, {} passed, {} errors",
+            original_count,
+            filtered_count,
+            final_count,
+            error_count
+        );
+    }
+
+    // Serialize the filtered list back to JSON
+    serde_json::to_vec(&filtered).unwrap_or_else(|e| {
+        tracing::error!("Failed to serialize filtered timeline: {}", e);
+        body.to_vec()
+    })
 }
 
 /// Build headers to send to upstream, filtering and transforming as needed
@@ -190,5 +296,44 @@ mod tests {
 
         assert_eq!(upstream.get("authorization").unwrap(), "Bearer test_token");
         assert_eq!(upstream.get("content-type").unwrap(), "application/json");
+    }
+
+    #[test]
+    fn test_is_timeline_endpoint_home() {
+        assert!(is_timeline_endpoint("/api/v1/timelines/home"));
+        assert!(is_timeline_endpoint("/api/v1/timelines/home?limit=20"));
+        assert!(is_timeline_endpoint(
+            "/api/v1/timelines/home?max_id=123&limit=20"
+        ));
+    }
+
+    #[test]
+    fn test_is_timeline_endpoint_public() {
+        assert!(is_timeline_endpoint("/api/v1/timelines/public"));
+        assert!(is_timeline_endpoint("/api/v1/timelines/public?local=true"));
+    }
+
+    #[test]
+    fn test_is_timeline_endpoint_list() {
+        assert!(is_timeline_endpoint("/api/v1/timelines/list/12345"));
+        assert!(is_timeline_endpoint(
+            "/api/v1/timelines/list/12345?limit=20"
+        ));
+    }
+
+    #[test]
+    fn test_is_timeline_endpoint_tag() {
+        assert!(is_timeline_endpoint("/api/v1/timelines/tag/rust"));
+        assert!(is_timeline_endpoint(
+            "/api/v1/timelines/tag/mastodon?limit=40"
+        ));
+    }
+
+    #[test]
+    fn test_is_timeline_endpoint_non_timeline() {
+        assert!(!is_timeline_endpoint("/api/v1/accounts/verify_credentials"));
+        assert!(!is_timeline_endpoint("/api/v1/statuses"));
+        assert!(!is_timeline_endpoint("/api/v1/notifications"));
+        assert!(!is_timeline_endpoint("/oauth/token"));
     }
 }

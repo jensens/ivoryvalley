@@ -16,7 +16,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite};
 use tracing::{debug, error, info, warn};
 
@@ -58,14 +58,14 @@ pub struct StreamingParams {
 #[derive(Clone)]
 pub struct WebSocketState {
     pub app_state: AppState,
-    pub seen_store: Arc<Mutex<SeenUriStore>>,
+    pub seen_store: Arc<SeenUriStore>,
 }
 
 impl WebSocketState {
-    pub fn new(app_state: AppState, seen_store: SeenUriStore) -> Self {
+    pub fn new(app_state: AppState, seen_store: Arc<SeenUriStore>) -> Self {
         Self {
             app_state,
-            seen_store: Arc::new(Mutex::new(seen_store)),
+            seen_store,
         }
     }
 }
@@ -89,7 +89,7 @@ pub async fn streaming_handler(
 async fn handle_streaming(
     client_ws: WebSocket,
     upstream_url: String,
-    seen_store: Arc<Mutex<SeenUriStore>>,
+    seen_store: Arc<SeenUriStore>,
     params: StreamingParams,
 ) {
     // Build upstream WebSocket URL
@@ -142,9 +142,7 @@ async fn handle_streaming(
             match msg_result {
                 Ok(msg) => {
                     // Convert and potentially filter the message
-                    if let Some(client_msg) =
-                        filter_upstream_message(msg, filter_store.clone()).await
-                    {
+                    if let Some(client_msg) = filter_upstream_message(msg, &filter_store) {
                         if client_tx.send(client_msg).await.is_err() {
                             debug!("Client channel closed");
                             break;
@@ -252,16 +250,14 @@ fn build_upstream_ws_url(upstream_base: &str, params: &StreamingParams) -> Strin
 }
 
 /// Filter messages from upstream, applying deduplication to update events
-async fn filter_upstream_message(
+fn filter_upstream_message(
     msg: tungstenite::Message,
-    seen_store: Arc<Mutex<SeenUriStore>>,
+    seen_store: &SeenUriStore,
 ) -> Option<Message> {
     match msg {
         tungstenite::Message::Text(text) => {
             // Try to parse as streaming event, filter out duplicates
-            filter_streaming_event(&text, seen_store)
-                .await
-                .map(|filtered| Message::Text(filtered.into()))
+            filter_streaming_event(&text, seen_store).map(|filtered| Message::Text(filtered.into()))
         }
         tungstenite::Message::Binary(data) => Some(Message::Binary(data)),
         tungstenite::Message::Ping(data) => Some(Message::Ping(data)),
@@ -278,10 +274,7 @@ async fn filter_upstream_message(
 }
 
 /// Filter a streaming event, returning None if it should be deduplicated
-async fn filter_streaming_event(
-    text: &str,
-    seen_store: Arc<Mutex<SeenUriStore>>,
-) -> Option<String> {
+fn filter_streaming_event(text: &str, seen_store: &SeenUriStore) -> Option<String> {
     // Parse the event JSON
     let event: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -306,23 +299,18 @@ async fn filter_streaming_event(
     // Extract the deduplication URI
     let dedup_uri = extract_dedup_uri(&payload)?;
 
-    // Check if we've seen this URI (lock the store)
-    let store = seen_store.lock().await;
-
-    match store.is_seen(dedup_uri) {
-        Ok(true) => {
-            debug!("Filtering duplicate status: {}", dedup_uri);
-            None // Filter out duplicate
-        }
-        Ok(false) => {
-            // Mark as seen and pass through
-            if let Err(e) = store.mark_seen(dedup_uri) {
-                warn!("Failed to mark URI as seen: {}", e);
+    // Atomically check if seen and mark as seen
+    match seen_store.check_and_mark(dedup_uri) {
+        Ok(was_seen) => {
+            if was_seen {
+                debug!("Filtering duplicate status: {}", dedup_uri);
+                None // Filter out duplicate
+            } else {
+                Some(text.to_string())
             }
-            Some(text.to_string())
         }
         Err(e) => {
-            warn!("Failed to check if URI is seen: {}", e);
+            warn!("Failed to check/mark URI {}: {}", dedup_uri, e);
             // On error, pass through to avoid dropping messages
             Some(text.to_string())
         }
@@ -406,39 +394,39 @@ mod tests {
         assert_eq!(url, "ws://localhost:3000/api/v1/streaming");
     }
 
-    #[tokio::test]
-    async fn test_filter_streaming_event_passes_non_update() {
-        let store = Arc::new(Mutex::new(SeenUriStore::open(":memory:").unwrap()));
+    #[test]
+    fn test_filter_streaming_event_passes_non_update() {
+        let store = SeenUriStore::open(":memory:").unwrap();
 
         // Notification event should pass through
         let event = r#"{"event":"notification","payload":"{\"id\":\"123\"}"}"#;
-        let result = filter_streaming_event(event, store.clone()).await;
+        let result = filter_streaming_event(event, &store);
         assert_eq!(result, Some(event.to_string()));
 
         // Delete event should pass through
         let delete_event = r#"{"event":"delete","payload":"123456"}"#;
-        let result = filter_streaming_event(delete_event, store).await;
+        let result = filter_streaming_event(delete_event, &store);
         assert_eq!(result, Some(delete_event.to_string()));
     }
 
-    #[tokio::test]
-    async fn test_filter_streaming_event_deduplicates_updates() {
-        let store = Arc::new(Mutex::new(SeenUriStore::open(":memory:").unwrap()));
+    #[test]
+    fn test_filter_streaming_event_deduplicates_updates() {
+        let store = SeenUriStore::open(":memory:").unwrap();
 
         let event = r#"{"event":"update","payload":"{\"id\":\"123\",\"uri\":\"https://mastodon.social/users/test/statuses/123\"}"}"#;
 
         // First time should pass through
-        let result = filter_streaming_event(event, store.clone()).await;
+        let result = filter_streaming_event(event, &store);
         assert!(result.is_some());
 
         // Second time should be filtered
-        let result = filter_streaming_event(event, store).await;
+        let result = filter_streaming_event(event, &store);
         assert!(result.is_none());
     }
 
-    #[tokio::test]
-    async fn test_filter_streaming_event_deduplicates_reblogs() {
-        let store = Arc::new(Mutex::new(SeenUriStore::open(":memory:").unwrap()));
+    #[test]
+    fn test_filter_streaming_event_deduplicates_reblogs() {
+        let store = SeenUriStore::open(":memory:").unwrap();
 
         // Original status
         let original = r#"{"event":"update","payload":"{\"id\":\"123\",\"uri\":\"https://mastodon.social/users/original/statuses/123\"}"}"#;
@@ -447,32 +435,32 @@ mod tests {
         let reblog = r#"{"event":"update","payload":"{\"id\":\"456\",\"uri\":\"https://mastodon.social/users/booster/statuses/456\",\"reblog\":{\"id\":\"123\",\"uri\":\"https://mastodon.social/users/original/statuses/123\"}}"}"#;
 
         // Original passes through
-        let result = filter_streaming_event(original, store.clone()).await;
+        let result = filter_streaming_event(original, &store);
         assert!(result.is_some());
 
         // Reblog is filtered (same underlying content)
-        let result = filter_streaming_event(reblog, store).await;
+        let result = filter_streaming_event(reblog, &store);
         assert!(result.is_none());
     }
 
-    #[tokio::test]
-    async fn test_filter_streaming_event_passes_invalid_json() {
-        let store = Arc::new(Mutex::new(SeenUriStore::open(":memory:").unwrap()));
+    #[test]
+    fn test_filter_streaming_event_passes_invalid_json() {
+        let store = SeenUriStore::open(":memory:").unwrap();
 
         // Heartbeat comment line (not JSON)
         let heartbeat = ":";
-        let result = filter_streaming_event(heartbeat, store.clone()).await;
+        let result = filter_streaming_event(heartbeat, &store);
         assert_eq!(result, Some(heartbeat.to_string()));
 
         // Invalid JSON passes through
         let invalid = "not json at all";
-        let result = filter_streaming_event(invalid, store).await;
+        let result = filter_streaming_event(invalid, &store);
         assert_eq!(result, Some(invalid.to_string()));
     }
 
-    #[tokio::test]
-    async fn test_filter_streaming_event_different_statuses_pass() {
-        let store = Arc::new(Mutex::new(SeenUriStore::open(":memory:").unwrap()));
+    #[test]
+    fn test_filter_streaming_event_different_statuses_pass() {
+        let store = SeenUriStore::open(":memory:").unwrap();
 
         let event1 =
             r#"{"event":"update","payload":"{\"id\":\"1\",\"uri\":\"https://example.com/1\"}"}"#;
@@ -480,9 +468,7 @@ mod tests {
             r#"{"event":"update","payload":"{\"id\":\"2\",\"uri\":\"https://example.com/2\"}"}"#;
 
         // Both different statuses should pass
-        assert!(filter_streaming_event(event1, store.clone())
-            .await
-            .is_some());
-        assert!(filter_streaming_event(event2, store).await.is_some());
+        assert!(filter_streaming_event(event1, &store).is_some());
+        assert!(filter_streaming_event(event2, &store).is_some());
     }
 }
