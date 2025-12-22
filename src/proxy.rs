@@ -97,9 +97,18 @@ async fn proxy_handler(
 
     // Forward body for methods that have one
     if method == Method::POST || method == Method::PUT || method == Method::PATCH {
-        let body_bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+        let max_body_size = state.config.max_body_size;
+        let body_bytes = axum::body::to_bytes(request.into_body(), max_body_size)
             .await
-            .map_err(|e| ProxyError::BodyRead(e.to_string()))?;
+            .map_err(|e| {
+                // Check if this is a length limit error
+                let error_msg = e.to_string();
+                if error_msg.contains("length limit exceeded") {
+                    ProxyError::PayloadTooLarge
+                } else {
+                    ProxyError::BodyRead(error_msg)
+                }
+            })?;
         upstream_request = upstream_request.body(body_bytes);
     }
 
@@ -239,6 +248,8 @@ fn build_upstream_headers(client_headers: &HeaderMap) -> HeaderMap {
 pub enum ProxyError {
     /// Failed to read request body
     BodyRead(String),
+    /// Request body exceeds the configured size limit
+    PayloadTooLarge,
     /// Failed to reach upstream server
     Upstream(String),
     /// Failed to read response from upstream
@@ -251,6 +262,10 @@ impl IntoResponse for ProxyError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             ProxyError::BodyRead(e) => (StatusCode::BAD_REQUEST, format!("Body read error: {}", e)),
+            ProxyError::PayloadTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Request body exceeds maximum allowed size".to_string(),
+            ),
             ProxyError::Upstream(e) => (StatusCode::BAD_GATEWAY, format!("Upstream error: {}", e)),
             ProxyError::ResponseRead(e) => (
                 StatusCode::BAD_GATEWAY,
