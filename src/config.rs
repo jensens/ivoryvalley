@@ -21,6 +21,8 @@ const DEFAULT_HOST: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 8080;
 /// Default database path
 const DEFAULT_DATABASE_PATH: &str = "ivoryvalley.db";
+/// Default maximum body size (50MB - allows video uploads)
+const DEFAULT_MAX_BODY_SIZE: usize = 50 * 1024 * 1024;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -43,6 +45,10 @@ pub struct CliArgs {
     #[arg(long, env = "IVORYVALLEY_DATABASE_PATH")]
     pub database_path: Option<PathBuf>,
 
+    /// Maximum request body size in bytes (default: 50MB)
+    #[arg(long, env = "IVORYVALLEY_MAX_BODY_SIZE")]
+    pub max_body_size: Option<usize>,
+
     /// Path to configuration file
     #[arg(short, long, env = "IVORYVALLEY_CONFIG")]
     pub config: Option<PathBuf>,
@@ -56,6 +62,7 @@ struct FileConfig {
     host: Option<String>,
     port: Option<u16>,
     database_path: Option<PathBuf>,
+    max_body_size: Option<usize>,
 }
 
 /// Configuration for the IvoryValley proxy server
@@ -72,6 +79,9 @@ pub struct Config {
 
     /// Path to the SQLite database file
     pub database_path: PathBuf,
+
+    /// Maximum request body size in bytes (prevents DoS via memory exhaustion)
+    pub max_body_size: usize,
 }
 
 impl Default for Config {
@@ -81,12 +91,13 @@ impl Default for Config {
             host: DEFAULT_HOST.to_string(),
             port: DEFAULT_PORT,
             database_path: PathBuf::from(DEFAULT_DATABASE_PATH),
+            max_body_size: DEFAULT_MAX_BODY_SIZE,
         }
     }
 }
 
 impl Config {
-    /// Create a new configuration with explicit values
+    /// Create a new configuration with explicit values (uses default max_body_size)
     #[allow(dead_code)] // Used in tests via library crate
     pub fn new(upstream_url: &str, host: &str, port: u16, database_path: PathBuf) -> Self {
         Self {
@@ -94,6 +105,25 @@ impl Config {
             host: host.to_string(),
             port,
             database_path,
+            max_body_size: DEFAULT_MAX_BODY_SIZE,
+        }
+    }
+
+    /// Create a new configuration with a custom max body size (for testing)
+    #[allow(dead_code)] // Used in tests via library crate
+    pub fn with_max_body_size(
+        upstream_url: &str,
+        host: &str,
+        port: u16,
+        database_path: PathBuf,
+        max_body_size: usize,
+    ) -> Self {
+        Self {
+            upstream_url: upstream_url.to_string(),
+            host: host.to_string(),
+            port,
+            database_path,
+            max_body_size,
         }
     }
 
@@ -123,6 +153,9 @@ impl Config {
         if let Some(db) = file_config.database_path {
             config.database_path = db;
         }
+        if let Some(size) = file_config.max_body_size {
+            config.max_body_size = size;
+        }
 
         // Apply CLI args (CLI overrides everything)
         if let Some(url) = args.upstream_url {
@@ -136,6 +169,9 @@ impl Config {
         }
         if let Some(db) = args.database_path {
             config.database_path = db;
+        }
+        if let Some(size) = args.max_body_size {
+            config.max_body_size = size;
         }
 
         Ok(config)
@@ -246,6 +282,7 @@ mod tests {
             host: None,
             port: None,
             database_path: None,
+            max_body_size: None,
             config: None,
         };
         let config = Config::load_from_args(args).unwrap();
@@ -253,6 +290,7 @@ mod tests {
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.port, 8080);
         assert_eq!(config.database_path, PathBuf::from("ivoryvalley.db"));
+        assert_eq!(config.max_body_size, 50 * 1024 * 1024); // 50MB default
     }
 
     #[test]
@@ -262,6 +300,7 @@ mod tests {
             host: Some("192.168.1.1".to_string()),
             port: Some(9000),
             database_path: Some(PathBuf::from("/cli/path.db")),
+            max_body_size: Some(100 * 1024 * 1024), // 100MB
             config: None,
         };
         let config = Config::load_from_args(args).unwrap();
@@ -269,6 +308,7 @@ mod tests {
         assert_eq!(config.host, "192.168.1.1");
         assert_eq!(config.port, 9000);
         assert_eq!(config.database_path, PathBuf::from("/cli/path.db"));
+        assert_eq!(config.max_body_size, 100 * 1024 * 1024);
     }
 
     #[test]
@@ -290,6 +330,7 @@ database_path = "/toml/db.sqlite"
             host: None,
             port: None,
             database_path: None,
+            max_body_size: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -318,6 +359,7 @@ database_path: "/yaml/db.sqlite"
             host: None,
             port: None,
             database_path: None,
+            max_body_size: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -346,6 +388,7 @@ database_path = "/file/db.sqlite"
             host: None, // Use file value
             port: Some(9999),
             database_path: None, // Use file value
+            max_body_size: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -371,6 +414,7 @@ upstream_url = "https://partial.example.com"
             host: None,
             port: None,
             database_path: None,
+            max_body_size: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -378,5 +422,6 @@ upstream_url = "https://partial.example.com"
         assert_eq!(config.host, "0.0.0.0"); // Default
         assert_eq!(config.port, 8080); // Default
         assert_eq!(config.database_path, PathBuf::from("ivoryvalley.db")); // Default
+        assert_eq!(config.max_body_size, 50 * 1024 * 1024); // Default 50MB
     }
 }

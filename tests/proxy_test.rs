@@ -619,3 +619,83 @@ async fn test_timeline_status_without_uri_passes_through() {
     let body: serde_json::Value = response.json();
     assert_eq!(body.as_array().unwrap().len(), 1);
 }
+
+// =============================================================================
+// Body size limit tests
+// =============================================================================
+
+/// Test that requests within the body size limit are processed normally.
+#[tokio::test]
+async fn test_body_within_limit_succeeds() {
+    let upstream = MockUpstream::start().await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    // Use a small limit (1KB) for testing
+    let config = Config::with_max_body_size(&upstream.url(), "0.0.0.0", 0, db_path, 1024);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+
+    // Send a small body (under 1KB)
+    let small_body = "x".repeat(500);
+    let response = client
+        .post("/api/v1/statuses")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .add_header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .text(small_body)
+        .await;
+
+    response.assert_status_ok();
+}
+
+/// Test that requests exceeding the body size limit return 413 Payload Too Large.
+#[tokio::test]
+async fn test_body_exceeding_limit_returns_413() {
+    let upstream = MockUpstream::start().await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    // Use a small limit (1KB) for testing
+    let config = Config::with_max_body_size(&upstream.url(), "0.0.0.0", 0, db_path, 1024);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+
+    // Send a large body (over 1KB)
+    let large_body = "x".repeat(2000);
+    let response = client
+        .post("/api/v1/statuses")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .add_header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .text(large_body)
+        .await;
+
+    // Should return 413 Payload Too Large
+    response.assert_status(axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+/// Test that the default body size limit allows reasonable requests.
+#[tokio::test]
+async fn test_default_body_limit_allows_normal_requests() {
+    let upstream = MockUpstream::start().await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    // Use default config (should have 50MB limit)
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+
+    // Send a reasonably sized body - should succeed with default 50MB limit
+    let normal_body = r#"{"status":"Hello world with some content"}"#;
+    let response = client
+        .post("/api/v1/statuses")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .add_header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .text(normal_body)
+        .await;
+
+    response.assert_status_ok();
+}
