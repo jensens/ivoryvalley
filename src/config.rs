@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use config::{ConfigError, Environment, File};
@@ -23,6 +24,10 @@ const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_DATABASE_PATH: &str = "ivoryvalley.db";
 /// Default maximum body size (50MB - allows video uploads)
 const DEFAULT_MAX_BODY_SIZE: usize = 50 * 1024 * 1024;
+/// Default HTTP connect timeout in seconds
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
+/// Default HTTP request timeout in seconds
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -49,6 +54,14 @@ pub struct CliArgs {
     #[arg(long, env = "IVORYVALLEY_MAX_BODY_SIZE")]
     pub max_body_size: Option<usize>,
 
+    /// HTTP client connect timeout in seconds
+    #[arg(long, env = "IVORYVALLEY_CONNECT_TIMEOUT_SECS")]
+    pub connect_timeout_secs: Option<u64>,
+
+    /// HTTP client request timeout in seconds
+    #[arg(long, env = "IVORYVALLEY_REQUEST_TIMEOUT_SECS")]
+    pub request_timeout_secs: Option<u64>,
+
     /// Path to configuration file
     #[arg(short, long, env = "IVORYVALLEY_CONFIG")]
     pub config: Option<PathBuf>,
@@ -63,6 +76,8 @@ struct FileConfig {
     port: Option<u16>,
     database_path: Option<PathBuf>,
     max_body_size: Option<usize>,
+    connect_timeout_secs: Option<u64>,
+    request_timeout_secs: Option<u64>,
 }
 
 /// Configuration for the IvoryValley proxy server
@@ -82,6 +97,12 @@ pub struct Config {
 
     /// Maximum request body size in bytes (prevents DoS via memory exhaustion)
     pub max_body_size: usize,
+
+    /// HTTP client connect timeout in seconds
+    pub connect_timeout_secs: u64,
+
+    /// HTTP client request timeout in seconds
+    pub request_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -92,12 +113,14 @@ impl Default for Config {
             port: DEFAULT_PORT,
             database_path: PathBuf::from(DEFAULT_DATABASE_PATH),
             max_body_size: DEFAULT_MAX_BODY_SIZE,
+            connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
+            request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
         }
     }
 }
 
 impl Config {
-    /// Create a new configuration with explicit values (uses default max_body_size)
+    /// Create a new configuration with explicit values (uses default max_body_size and timeouts)
     #[allow(dead_code)] // Used in tests via library crate
     pub fn new(upstream_url: &str, host: &str, port: u16, database_path: PathBuf) -> Self {
         Self {
@@ -106,6 +129,8 @@ impl Config {
             port,
             database_path,
             max_body_size: DEFAULT_MAX_BODY_SIZE,
+            connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
+            request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
         }
     }
 
@@ -124,6 +149,8 @@ impl Config {
             port,
             database_path,
             max_body_size,
+            connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
+            request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
         }
     }
 
@@ -156,6 +183,12 @@ impl Config {
         if let Some(size) = file_config.max_body_size {
             config.max_body_size = size;
         }
+        if let Some(ct) = file_config.connect_timeout_secs {
+            config.connect_timeout_secs = ct;
+        }
+        if let Some(rt) = file_config.request_timeout_secs {
+            config.request_timeout_secs = rt;
+        }
 
         // Apply CLI args (CLI overrides everything)
         if let Some(url) = args.upstream_url {
@@ -172,6 +205,12 @@ impl Config {
         }
         if let Some(size) = args.max_body_size {
             config.max_body_size = size;
+        }
+        if let Some(ct) = args.connect_timeout_secs {
+            config.connect_timeout_secs = ct;
+        }
+        if let Some(rt) = args.request_timeout_secs {
+            config.request_timeout_secs = rt;
         }
 
         Ok(config)
@@ -224,6 +263,8 @@ impl AppState {
     pub fn new(config: Config, seen_store: Arc<crate::db::SeenUriStore>) -> Self {
         let http_client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
+            .timeout(Duration::from_secs(config.request_timeout_secs))
             .build()
             .expect("Failed to create HTTP client");
 
@@ -248,6 +289,9 @@ mod tests {
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.port, 8080);
         assert_eq!(config.database_path, PathBuf::from("ivoryvalley.db"));
+        assert_eq!(config.max_body_size, 50 * 1024 * 1024);
+        assert_eq!(config.connect_timeout_secs, 10);
+        assert_eq!(config.request_timeout_secs, 30);
     }
 
     #[test]
@@ -283,6 +327,8 @@ mod tests {
             port: None,
             database_path: None,
             max_body_size: None,
+            connect_timeout_secs: None,
+            request_timeout_secs: None,
             config: None,
         };
         let config = Config::load_from_args(args).unwrap();
@@ -290,7 +336,9 @@ mod tests {
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.port, 8080);
         assert_eq!(config.database_path, PathBuf::from("ivoryvalley.db"));
-        assert_eq!(config.max_body_size, 50 * 1024 * 1024); // 50MB default
+        assert_eq!(config.max_body_size, 50 * 1024 * 1024);
+        assert_eq!(config.connect_timeout_secs, 10);
+        assert_eq!(config.request_timeout_secs, 30);
     }
 
     #[test]
@@ -300,7 +348,9 @@ mod tests {
             host: Some("192.168.1.1".to_string()),
             port: Some(9000),
             database_path: Some(PathBuf::from("/cli/path.db")),
-            max_body_size: Some(100 * 1024 * 1024), // 100MB
+            max_body_size: Some(100 * 1024 * 1024),
+            connect_timeout_secs: Some(5),
+            request_timeout_secs: Some(60),
             config: None,
         };
         let config = Config::load_from_args(args).unwrap();
@@ -309,6 +359,8 @@ mod tests {
         assert_eq!(config.port, 9000);
         assert_eq!(config.database_path, PathBuf::from("/cli/path.db"));
         assert_eq!(config.max_body_size, 100 * 1024 * 1024);
+        assert_eq!(config.connect_timeout_secs, 5);
+        assert_eq!(config.request_timeout_secs, 60);
     }
 
     #[test]
@@ -321,6 +373,8 @@ upstream_url = "https://toml.example.com"
 host = "10.0.0.1"
 port = 7000
 database_path = "/toml/db.sqlite"
+connect_timeout_secs = 15
+request_timeout_secs = 45
 "#
         )
         .unwrap();
@@ -331,6 +385,8 @@ database_path = "/toml/db.sqlite"
             port: None,
             database_path: None,
             max_body_size: None,
+            connect_timeout_secs: None,
+            request_timeout_secs: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -338,6 +394,8 @@ database_path = "/toml/db.sqlite"
         assert_eq!(config.host, "10.0.0.1");
         assert_eq!(config.port, 7000);
         assert_eq!(config.database_path, PathBuf::from("/toml/db.sqlite"));
+        assert_eq!(config.connect_timeout_secs, 15);
+        assert_eq!(config.request_timeout_secs, 45);
     }
 
     #[test]
@@ -350,6 +408,8 @@ upstream_url: "https://yaml.example.com"
 host: "10.0.0.2"
 port: 6000
 database_path: "/yaml/db.sqlite"
+connect_timeout_secs: 20
+request_timeout_secs: 120
 "#
         )
         .unwrap();
@@ -360,6 +420,8 @@ database_path: "/yaml/db.sqlite"
             port: None,
             database_path: None,
             max_body_size: None,
+            connect_timeout_secs: None,
+            request_timeout_secs: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -367,6 +429,8 @@ database_path: "/yaml/db.sqlite"
         assert_eq!(config.host, "10.0.0.2");
         assert_eq!(config.port, 6000);
         assert_eq!(config.database_path, PathBuf::from("/yaml/db.sqlite"));
+        assert_eq!(config.connect_timeout_secs, 20);
+        assert_eq!(config.request_timeout_secs, 120);
     }
 
     #[test]
@@ -379,6 +443,8 @@ upstream_url = "https://file.example.com"
 host = "10.0.0.1"
 port = 7000
 database_path = "/file/db.sqlite"
+connect_timeout_secs = 15
+request_timeout_secs = 45
 "#
         )
         .unwrap();
@@ -389,6 +455,8 @@ database_path = "/file/db.sqlite"
             port: Some(9999),
             database_path: None, // Use file value
             max_body_size: None,
+            connect_timeout_secs: Some(5), // Override file value
+            request_timeout_secs: None,    // Use file value
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -396,6 +464,8 @@ database_path = "/file/db.sqlite"
         assert_eq!(config.host, "10.0.0.1"); // File
         assert_eq!(config.port, 9999); // CLI
         assert_eq!(config.database_path, PathBuf::from("/file/db.sqlite")); // File
+        assert_eq!(config.connect_timeout_secs, 5); // CLI override
+        assert_eq!(config.request_timeout_secs, 45); // File
     }
 
     #[test]
@@ -415,6 +485,8 @@ upstream_url = "https://partial.example.com"
             port: None,
             database_path: None,
             max_body_size: None,
+            connect_timeout_secs: None,
+            request_timeout_secs: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -423,5 +495,7 @@ upstream_url = "https://partial.example.com"
         assert_eq!(config.port, 8080); // Default
         assert_eq!(config.database_path, PathBuf::from("ivoryvalley.db")); // Default
         assert_eq!(config.max_body_size, 50 * 1024 * 1024); // Default 50MB
+        assert_eq!(config.connect_timeout_secs, 10); // Default
+        assert_eq!(config.request_timeout_secs, 30); // Default
     }
 }

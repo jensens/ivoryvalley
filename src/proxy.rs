@@ -113,10 +113,13 @@ async fn proxy_handler(
     }
 
     // Send request to upstream
-    let upstream_response = upstream_request
-        .send()
-        .await
-        .map_err(|e| ProxyError::Upstream(e.to_string()))?;
+    let upstream_response = upstream_request.send().await.map_err(|e| {
+        if e.is_timeout() {
+            ProxyError::Timeout(e.to_string())
+        } else {
+            ProxyError::Upstream(e.to_string())
+        }
+    })?;
 
     // Convert the response
     let status = upstream_response.status();
@@ -250,6 +253,8 @@ pub enum ProxyError {
     BodyRead(String),
     /// Request body exceeds the configured size limit
     PayloadTooLarge,
+    /// Request to upstream server timed out
+    Timeout(String),
     /// Failed to reach upstream server
     Upstream(String),
     /// Failed to read response from upstream
@@ -265,6 +270,10 @@ impl IntoResponse for ProxyError {
             ProxyError::PayloadTooLarge => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Request body exceeds maximum allowed size".to_string(),
+            ),
+            ProxyError::Timeout(e) => (
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("Gateway timeout: {}", e),
             ),
             ProxyError::Upstream(e) => (StatusCode::BAD_GATEWAY, format!("Upstream error: {}", e)),
             ProxyError::ResponseRead(e) => (
