@@ -1,0 +1,9 @@
+<svg viewBox="5 3 90 92" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Ivory Valley Icon - Dark Background Version -->
+  <!-- I tusk (ivory) -->
+  <path d="M34 8 C30 25, 24 45, 20 65 C18 78, 18 88, 18 90 L10 90 C10 88, 10 78, 12 65 C16 45, 24 25, 32 8 Z" fill="#f5f5dc"/>
+  <!-- V left tusk (purple) -->
+  <path d="M54 8 C56 25, 60 45, 64 65 C66 78, 66 88, 66 90 L58 90 C58 88, 58 78, 56 65 C54 45, 52 25, 52 8 Z" fill="#8b7ec8"/>
+  <!-- V right tusk (purple) -->
+  <path d="M84 8 C82 25, 78 45, 74 65 C72 78, 72 88, 72 90 L80 90 C80 88, 80 78, 82 65 C84 45, 86 25, 86 8 Z" fill="#8b7ec8"/>
+</svg>

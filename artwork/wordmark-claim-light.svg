@@ -1,0 +1,19 @@
+<svg viewBox="0 0 320 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Ivory Valley Wordmark with Claim - Light Background Version -->
+  <g transform="translate(35, 0)">
+    <!-- I as tusk (dark) -->
+    <path d="M12 8 C10 20, 7 35, 5 50 C4 58, 4 63, 4 65 L0 65 C0 63, 0 58, 1 50 C3 35, 7 20, 10 8 Z" 
+          transform="translate(5, 3) scale(0.95)" fill="#2a2a3e"/>
+    <!-- "vory" text (dark) -->
+    <text x="22" y="52" font-family="Cormorant Garamond, Georgia, serif" font-size="42" font-weight="500" fill="#2a2a3e">vory</text>
+    <!-- V as two tusks (purple) -->
+    <g transform="translate(98, 3) scale(0.68)">
+      <path d="M54 8 C56 25, 60 45, 64 65 C66 78, 66 88, 66 90 L58 90 C58 88, 58 78, 56 65 C54 45, 52 25, 52 8 Z" fill="#6b5b9a"/>
+      <path d="M84 8 C82 25, 78 45, 74 65 C72 78, 72 88, 72 90 L80 90 C80 88, 80 78, 82 65 C84 45, 86 25, 86 8 Z" fill="#6b5b9a"/>
+    </g>
+    <!-- "alley" text (purple) -->
+    <text x="163" y="52" font-family="Cormorant Garamond, Georgia, serif" font-size="42" font-weight="500" fill="#6b5b9a">alley</text>
+  </g>
+  <!-- Claim - Spectral Italic -->
+  <text x="160" y="85" text-anchor="middle" font-family="Spectral, Georgia, serif" font-size="13" font-style="italic" fill="#666666">R.I.P. dup boosts</text>
+</svg>
