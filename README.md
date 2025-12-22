@@ -1,1 +1,117 @@
-# ivoryvalley
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="artwork/wordmark-claim-light.svg">
+  <source media="(prefers-color-scheme: light)" srcset="artwork/wordmark-claim-dark.svg">
+  <img alt="IvoryValley" src="artwork/wordmark-claim-dark.svg" width="400">
+</picture>
+
+# IvoryValley
+
+> **Status: Under Heavy Development** - This project is in early development. APIs and features may change without notice.
+
+A transparent deduplication proxy for Mastodon and the Fediverse.
+
+## The Problem
+
+Following users across multiple Fediverse accounts often results in seeing the same posts repeatedly due to boosts/reposts. Your timeline can show the same content 10+ times.
+
+## The Solution
+
+IvoryValley sits between your Mastodon client and the upstream server, filtering out duplicate posts before they reach you. It tracks seen post URIs and removes duplicates from timeline responses.
+
+```
+┌─────────────┐     ┌─────────────────┐     ┌──────────────┐
+│   Client    │────▶│   IvoryValley   │────▶│   Mastodon   │
+│  (Tusky,    │◀────│                 │◀────│   Instance   │
+│   etc.)     │     │  - Filter dupes │     │              │
+└─────────────┘     │  - Store URIs   │     └──────────────┘
+                    │  - Pass auth    │
+                    └─────────────────┘
+```
+
+## Features
+
+- **Transparent proxying** - Works with any Mastodon-compatible client
+- **Deduplication** - Filters duplicate posts and boosts from timelines
+- **WebSocket streaming** - Real-time filtering for streaming connections
+- **OAuth passthrough** - No credential handling, tokens are forwarded directly
+- **SQLite storage** - Lightweight local database for tracking seen URIs
+- **Configurable** - CLI args, environment variables, or config file
+
+## Installation
+
+### From Source
+
+```bash
+git clone https://github.com/your-username/ivoryvalley.git
+cd ivoryvalley
+cargo build --release
+```
+
+The binary will be at `target/release/ivoryvalley`.
+
+## Usage
+
+```bash
+# Basic usage
+ivoryvalley --upstream https://mastodon.social
+
+# With custom port
+ivoryvalley --upstream https://mastodon.social --port 8080
+
+# With environment variables
+IVORYVALLEY_UPSTREAM=https://mastodon.social ivoryvalley
+```
+
+Then configure your Mastodon client to use `http://localhost:8080` (or your chosen port) as the server URL instead of your actual instance.
+
+## Configuration
+
+IvoryValley supports configuration via:
+
+1. **CLI arguments** (highest priority)
+2. **Environment variables** (prefixed with `IVORYVALLEY_`)
+3. **Config file** (`ivoryvalley.toml`)
+
+### Options
+
+| Option | Env Variable | Default | Description |
+|--------|--------------|---------|-------------|
+| `--upstream` | `IVORYVALLEY_UPSTREAM` | - | Upstream Mastodon instance URL (required) |
+| `--host` | `IVORYVALLEY_HOST` | `127.0.0.1` | Address to bind to |
+| `--port` | `IVORYVALLEY_PORT` | `3000` | Port to listen on |
+| `--database` | `IVORYVALLEY_DATABASE` | `ivoryvalley.db` | SQLite database path |
+
+## How It Works
+
+1. Client sends request to IvoryValley
+2. IvoryValley forwards request to upstream Mastodon instance
+3. For timeline endpoints, IvoryValley:
+   - Extracts post URIs (globally unique across federation)
+   - Checks each URI against the seen-URI database
+   - Filters out duplicates
+   - Records new URIs as seen
+4. Returns filtered response to client
+
+## Development
+
+```bash
+# Run tests
+cargo test
+
+# Run with logging
+RUST_LOG=ivoryvalley=debug cargo run -- --upstream https://mastodon.social
+
+# Check code quality
+cargo clippy --all-features -- -D warnings
+
+# Format code
+cargo fmt
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+
+MIT
