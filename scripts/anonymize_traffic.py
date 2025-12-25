@@ -77,7 +77,10 @@ def anonymize_headers(headers: dict[str, str]) -> dict[str, str]:
     result = {}
     for key, value in headers.items():
         key_lower = key.lower()
-        if key_lower == "authorization":
+        if key_lower == "content-length":
+            # Skip content-length as body size changes after anonymization
+            continue
+        elif key_lower == "authorization":
             # Replace Bearer token
             if value.startswith("Bearer "):
                 result[key] = "Bearer anonymous_token_xxx"

@@ -272,3 +272,90 @@ async fn test_fixture_loading() {
     let body: Vec<serde_json::Value> = serde_json::from_str(&exchanges[0].response.body).unwrap();
     assert_eq!(body.len(), 3, "First response should have 3 statuses");
 }
+
+/// Test deduplication with real anonymized traffic from a live Mastodon session.
+///
+/// This test uses traffic recorded from an actual browsing session, anonymized
+/// to remove PII. It verifies that deduplication works correctly with real-world
+/// data patterns including:
+/// - Multiple timeline fetches with pagination
+/// - Reblogs (boosts) of posts from various instances
+/// - Duplicate boosts of the same content across requests
+#[tokio::test]
+async fn test_real_traffic_deduplication() {
+    // Load real anonymized traffic
+    let exchanges = load_fixtures("real_timeline.jsonl");
+    assert_eq!(exchanges.len(), 5, "Should have 5 timeline requests");
+
+    // Start the replay server
+    let (mock_addr, _handle) = start_replay_server(&exchanges).await;
+
+    // Create temporary database
+    let temp_dir = common::create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+
+    // Create the proxy
+    let config = Config::new(
+        &format!("http://{}", mock_addr),
+        "127.0.0.1",
+        0,
+        db_path.clone(),
+    );
+    let seen_store = SeenUriStore::open(&db_path).unwrap();
+    let proxy_router = create_proxy_router(config, seen_store);
+
+    let test_server = axum_test::TestServer::new(proxy_router).unwrap();
+
+    // Track total statuses received vs upstream
+    let mut total_upstream = 0;
+    let mut total_received = 0;
+
+    // Replay all 5 requests
+    for (i, exchange) in exchanges.iter().enumerate() {
+        let upstream_body: Vec<serde_json::Value> =
+            serde_json::from_str(&exchange.response.body).unwrap();
+        total_upstream += upstream_body.len();
+
+        let response = test_server
+            .get("/api/v1/timelines/home")
+            .add_query_param("limit", "20")
+            .add_header(axum::http::header::AUTHORIZATION, "Bearer test_token")
+            .await;
+
+        assert_eq!(
+            response.status_code(),
+            StatusCode::OK,
+            "Request {} should succeed",
+            i + 1
+        );
+
+        let body: Vec<serde_json::Value> = response.json();
+        total_received += body.len();
+
+        // Each response should have same or fewer statuses than upstream
+        // (deduplication removes duplicates)
+        assert!(
+            body.len() <= upstream_body.len(),
+            "Request {} should not have more statuses than upstream",
+            i + 1
+        );
+    }
+
+    // With deduplication, we should receive fewer total statuses
+    // The fixture has 1 duplicate boost (status 100241 in request 5 is a boost
+    // of the same post as status 100042 in request 1)
+    assert!(
+        total_received < total_upstream,
+        "Deduplication should reduce total statuses: received {} vs upstream {}",
+        total_received,
+        total_upstream
+    );
+
+    // Verify at least 1 status was filtered (the duplicate boost)
+    let filtered = total_upstream - total_received;
+    assert!(
+        filtered >= 1,
+        "At least 1 duplicate should be filtered, got {}",
+        filtered
+    );
+}
