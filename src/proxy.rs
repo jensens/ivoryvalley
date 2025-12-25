@@ -17,17 +17,7 @@ use crate::db::{extract_dedup_uri, SeenUriStore};
 use crate::websocket::{streaming_handler, WebSocketState};
 use std::sync::Arc;
 
-/// Headers that should be passed through from client to upstream
-const PASSTHROUGH_HEADERS: &[&str] = &[
-    "authorization",
-    "content-type",
-    "accept",
-    "accept-language",
-    "user-agent",
-    "content-length",
-];
-
-/// Headers that should NOT be forwarded
+/// Headers that should NOT be forwarded to upstream
 const STRIP_HEADERS: &[&str] = &["host", "connection", "transfer-encoding"];
 
 /// Timeline endpoint prefixes that should have deduplication applied
@@ -37,6 +27,81 @@ const TIMELINE_ENDPOINTS: &[&str] = &[
     "/api/v1/timelines/list/",
     "/api/v1/timelines/tag/",
 ];
+
+/// Extract the proxy's base URL from the incoming request for redirect rewriting.
+///
+/// This determines how clients are reaching the proxy so we can rewrite
+/// upstream redirect URLs to point back to the proxy.
+fn get_proxy_base_url(headers: &HeaderMap, uri: &axum::http::Uri) -> Option<String> {
+    // Try to get the Host header
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| uri.host())?;
+
+    // Determine scheme - check X-Forwarded-Proto first (for reverse proxies),
+    // then fall back to the URI scheme, then default to http
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| uri.scheme_str())
+        .unwrap_or("http");
+
+    Some(format!("{}://{}", scheme, host))
+}
+
+/// Rewrite a Set-Cookie header for proxy compatibility.
+///
+/// Removes Domain and Secure attributes so cookies work on the proxy origin.
+fn rewrite_set_cookie_header(cookie: &str) -> String {
+    let mut parts: Vec<&str> = cookie.split(';').map(|s| s.trim()).collect();
+
+    // Filter out Domain and Secure attributes
+    parts.retain(|part| {
+        let lower = part.to_lowercase();
+        !lower.starts_with("domain=") && lower != "secure"
+    });
+
+    parts.join("; ")
+}
+
+/// Rewrite a Location header value, replacing the upstream URL with the proxy URL.
+fn rewrite_location_header(
+    location: &str,
+    upstream_url: &str,
+    proxy_base_url: &Option<String>,
+) -> String {
+    let Some(ref proxy_url) = proxy_base_url else {
+        return location.to_string();
+    };
+
+    // Parse both URLs to compare their origins properly
+    let Ok(location_parsed) = url::Url::parse(location) else {
+        return location.to_string();
+    };
+
+    let Ok(upstream_parsed) = url::Url::parse(upstream_url) else {
+        return location.to_string();
+    };
+
+    // Compare scheme, host, and port (origins must match exactly)
+    let location_origin = location_parsed.origin();
+    let upstream_origin = upstream_parsed.origin();
+
+    if location_origin == upstream_origin {
+        // Parse proxy URL to extract its components
+        if let Ok(proxy_parsed) = url::Url::parse(proxy_url) {
+            // Build new URL with proxy origin but location's path/query/fragment
+            let mut new_url = proxy_parsed.clone();
+            new_url.set_path(location_parsed.path());
+            new_url.set_query(location_parsed.query());
+            new_url.set_fragment(location_parsed.fragment());
+            return new_url.to_string();
+        }
+    }
+
+    location.to_string()
+}
 
 /// Check if the given path is a timeline endpoint that should be filtered
 fn is_timeline_endpoint(path: &str) -> bool {
@@ -78,8 +143,18 @@ async fn proxy_handler(
         .map(|pq| pq.as_str())
         .unwrap_or("/");
 
+    // Capture the proxy's base URL from the Host header for rewriting redirects
+    let proxy_base_url = get_proxy_base_url(request.headers(), request.uri());
+
     // Determine if this is a timeline endpoint that should be filtered
     let should_filter = method == Method::GET && is_timeline_endpoint(path);
+
+    // Log request path for debugging
+    if should_filter {
+        tracing::debug!("Timeline request: {} {}", method, path);
+    } else if path.starts_with("/api/") {
+        tracing::trace!("API request: {} {}", method, path);
+    }
 
     // Build the upstream URL
     let upstream_url = format!("{}{}", state.config.upstream_url, path);
@@ -87,8 +162,8 @@ async fn proxy_handler(
     // Build the upstream request
     let mut upstream_request = state.http_client.request(method.clone(), &upstream_url);
 
-    // Forward headers
-    let headers = build_upstream_headers(request.headers());
+    // Forward headers (rewriting Origin/Referer for CSRF)
+    let headers = build_upstream_headers(request.headers(), &state.config.upstream_url);
     for (name, value) in headers.iter() {
         if let Ok(value_str) = value.to_str() {
             upstream_request = upstream_request.header(name.as_str(), value_str);
@@ -142,9 +217,39 @@ async fn proxy_handler(
     // Forward response headers (except Content-Length which may have changed)
     for (name, value) in response_headers.iter() {
         let name_lower = name.as_str().to_lowercase();
-        if !STRIP_HEADERS.contains(&name_lower.as_str()) && name_lower != "content-length" {
-            response = response.header(name, value);
+        if STRIP_HEADERS.contains(&name_lower.as_str()) || name_lower == "content-length" {
+            continue;
         }
+
+        // Rewrite Location headers to point back to the proxy
+        if name_lower == "location" {
+            if let Ok(location_str) = value.to_str() {
+                let rewritten = rewrite_location_header(
+                    location_str,
+                    &state.config.upstream_url,
+                    &proxy_base_url,
+                );
+                if let Ok(header_value) = rewritten.parse::<header::HeaderValue>() {
+                    tracing::debug!("Rewrote Location header: {} -> {}", location_str, rewritten);
+                    response = response.header(name, header_value);
+                    continue;
+                }
+            }
+        }
+
+        // Rewrite Set-Cookie headers to work with the proxy origin
+        if name_lower == "set-cookie" {
+            if let Ok(cookie_str) = value.to_str() {
+                let rewritten = rewrite_set_cookie_header(cookie_str);
+                if let Ok(header_value) = rewritten.parse::<header::HeaderValue>() {
+                    tracing::debug!("Rewrote Set-Cookie header: {} -> {}", cookie_str, rewritten);
+                    response = response.header(name, header_value);
+                    continue;
+                }
+            }
+        }
+
+        response = response.header(name, value);
     }
 
     response
@@ -225,9 +330,17 @@ fn filter_timeline_response(body: &[u8], state: &AppState) -> Vec<u8> {
     })
 }
 
-/// Build headers to send to upstream, filtering and transforming as needed
-fn build_upstream_headers(client_headers: &HeaderMap) -> HeaderMap {
+/// Build headers to send to upstream, filtering and transforming as needed.
+///
+/// Rewrites Origin and Referer headers to point to the upstream server
+/// so CSRF protection works correctly.
+fn build_upstream_headers(client_headers: &HeaderMap, upstream_url: &str) -> HeaderMap {
     let mut upstream_headers = HeaderMap::new();
+
+    // Parse upstream URL to get its origin
+    let upstream_origin = url::Url::parse(upstream_url)
+        .ok()
+        .map(|u| format!("{}://{}", u.scheme(), u.host_str().unwrap_or("")));
 
     for (name, value) in client_headers.iter() {
         let name_lower = name.as_str().to_lowercase();
@@ -237,10 +350,43 @@ fn build_upstream_headers(client_headers: &HeaderMap) -> HeaderMap {
             continue;
         }
 
-        // Only forward known passthrough headers
-        if PASSTHROUGH_HEADERS.contains(&name_lower.as_str()) {
-            upstream_headers.insert(name.clone(), value.clone());
+        // Rewrite Origin header to upstream (for CSRF protection)
+        if name_lower == "origin" {
+            if let Some(ref origin) = upstream_origin {
+                if let Ok(header_value) = origin.parse::<header::HeaderValue>() {
+                    tracing::debug!("Rewrote Origin header to upstream: {}", origin);
+                    upstream_headers.insert(name.clone(), header_value);
+                    continue;
+                }
+            }
         }
+
+        // Rewrite Referer header to upstream (for CSRF protection)
+        if name_lower == "referer" {
+            if let Ok(referer_str) = value.to_str() {
+                // Replace the proxy origin with upstream origin in the referer
+                if let (Ok(referer_url), Ok(upstream_parsed)) =
+                    (url::Url::parse(referer_str), url::Url::parse(upstream_url))
+                {
+                    let mut new_referer = upstream_parsed.clone();
+                    new_referer.set_path(referer_url.path());
+                    new_referer.set_query(referer_url.query());
+                    new_referer.set_fragment(referer_url.fragment());
+                    if let Ok(header_value) = new_referer.as_str().parse::<header::HeaderValue>() {
+                        tracing::debug!(
+                            "Rewrote Referer header: {} -> {}",
+                            referer_str,
+                            new_referer
+                        );
+                        upstream_headers.insert(name.clone(), header_value);
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Forward all other headers
+        upstream_headers.insert(name.clone(), value.clone());
     }
 
     upstream_headers
@@ -310,7 +456,7 @@ mod tests {
         client_headers.insert("host", "proxy.local".parse().unwrap());
         client_headers.insert("authorization", "Bearer token".parse().unwrap());
 
-        let upstream = build_upstream_headers(&client_headers);
+        let upstream = build_upstream_headers(&client_headers, "https://mastodon.social");
 
         assert!(upstream.get("host").is_none());
         assert!(upstream.get("authorization").is_some());
@@ -322,10 +468,36 @@ mod tests {
         client_headers.insert("authorization", "Bearer test_token".parse().unwrap());
         client_headers.insert("content-type", "application/json".parse().unwrap());
 
-        let upstream = build_upstream_headers(&client_headers);
+        let upstream = build_upstream_headers(&client_headers, "https://mastodon.social");
 
         assert_eq!(upstream.get("authorization").unwrap(), "Bearer test_token");
         assert_eq!(upstream.get("content-type").unwrap(), "application/json");
+    }
+
+    #[test]
+    fn test_build_upstream_headers_rewrites_origin() {
+        let mut client_headers = HeaderMap::new();
+        client_headers.insert("origin", "http://localhost:8080".parse().unwrap());
+
+        let upstream = build_upstream_headers(&client_headers, "https://nerdculture.de");
+
+        assert_eq!(upstream.get("origin").unwrap(), "https://nerdculture.de");
+    }
+
+    #[test]
+    fn test_build_upstream_headers_rewrites_referer() {
+        let mut client_headers = HeaderMap::new();
+        client_headers.insert(
+            "referer",
+            "http://localhost:8080/auth/sign_in".parse().unwrap(),
+        );
+
+        let upstream = build_upstream_headers(&client_headers, "https://nerdculture.de");
+
+        assert_eq!(
+            upstream.get("referer").unwrap(),
+            "https://nerdculture.de/auth/sign_in"
+        );
     }
 
     #[test]
@@ -427,5 +599,126 @@ mod tests {
             .unwrap();
         let body_str = String::from_utf8(body.to_vec()).unwrap();
         assert!(body_str.contains("Response build error"));
+    }
+
+    #[test]
+    fn test_rewrite_set_cookie_removes_domain_and_secure() {
+        let cookie = "_mastodon_session=abc123; Domain=nerdculture.de; Path=/; Secure; HttpOnly; SameSite=Lax";
+        let result = rewrite_set_cookie_header(cookie);
+
+        assert_eq!(
+            result,
+            "_mastodon_session=abc123; Path=/; HttpOnly; SameSite=Lax"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_set_cookie_preserves_simple_cookie() {
+        let cookie = "session=xyz; Path=/; HttpOnly";
+        let result = rewrite_set_cookie_header(cookie);
+
+        assert_eq!(result, "session=xyz; Path=/; HttpOnly");
+    }
+
+    #[test]
+    fn test_get_proxy_base_url_from_host_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "localhost:8080".parse().unwrap());
+
+        let uri: axum::http::Uri = "/api/v1/instance".parse().unwrap();
+        let result = get_proxy_base_url(&headers, &uri);
+
+        assert_eq!(result, Some("http://localhost:8080".to_string()));
+    }
+
+    #[test]
+    fn test_get_proxy_base_url_with_forwarded_proto() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "proxy.example.com".parse().unwrap());
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+
+        let uri: axum::http::Uri = "/api/v1/instance".parse().unwrap();
+        let result = get_proxy_base_url(&headers, &uri);
+
+        assert_eq!(result, Some("https://proxy.example.com".to_string()));
+    }
+
+    #[test]
+    fn test_get_proxy_base_url_no_host() {
+        let headers = HeaderMap::new();
+        let uri: axum::http::Uri = "/api/v1/instance".parse().unwrap();
+        let result = get_proxy_base_url(&headers, &uri);
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_rewrite_location_header_rewrites_upstream() {
+        let location = "https://mastodon.social/oauth/authorize?client_id=abc";
+        let upstream_url = "https://mastodon.social";
+        let proxy_base_url = Some("http://localhost:8080".to_string());
+
+        let result = rewrite_location_header(location, upstream_url, &proxy_base_url);
+
+        assert_eq!(
+            result,
+            "http://localhost:8080/oauth/authorize?client_id=abc"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_location_header_preserves_non_upstream() {
+        let location = "https://other.example.com/callback";
+        let upstream_url = "https://mastodon.social";
+        let proxy_base_url = Some("http://localhost:8080".to_string());
+
+        let result = rewrite_location_header(location, upstream_url, &proxy_base_url);
+
+        // Should not rewrite URLs that don't match the upstream
+        assert_eq!(result, "https://other.example.com/callback");
+    }
+
+    #[test]
+    fn test_rewrite_location_header_no_proxy_url() {
+        let location = "https://mastodon.social/oauth/authorize";
+        let upstream_url = "https://mastodon.social";
+        let proxy_base_url = None;
+
+        let result = rewrite_location_header(location, upstream_url, &proxy_base_url);
+
+        // Should pass through unchanged when no proxy URL
+        assert_eq!(result, "https://mastodon.social/oauth/authorize");
+    }
+
+    #[test]
+    fn test_rewrite_location_header_with_default_port() {
+        // Port 443 is the default for https, so these are the same origin
+        let location = "https://nerdculture.de:443/oauth/authorize?response_type=code";
+        let upstream_url = "https://nerdculture.de";
+        let proxy_base_url = Some("http://localhost:8080".to_string());
+
+        let result = rewrite_location_header(location, upstream_url, &proxy_base_url);
+
+        // Default port 443 is equivalent to no port for https - should rewrite
+        assert_eq!(
+            result,
+            "http://localhost:8080/oauth/authorize?response_type=code"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_location_header_with_non_default_port() {
+        // Port 8443 is NOT the default for https, so these are different origins
+        let location = "https://nerdculture.de:8443/oauth/authorize?response_type=code";
+        let upstream_url = "https://nerdculture.de";
+        let proxy_base_url = Some("http://localhost:8080".to_string());
+
+        let result = rewrite_location_header(location, upstream_url, &proxy_base_url);
+
+        // Different port means different origin - should NOT rewrite
+        assert_eq!(
+            result,
+            "https://nerdculture.de:8443/oauth/authorize?response_type=code"
+        );
     }
 }
