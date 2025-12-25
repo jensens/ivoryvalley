@@ -603,6 +603,24 @@ mod tests {
     }
 
     #[test]
+    fn test_build_upstream_headers_strips_accept_encoding() {
+        // Accept-Encoding must be stripped to prevent gzip responses
+        // that the proxy cannot parse for deduplication
+        let mut client_headers = HeaderMap::new();
+        client_headers.insert("accept-encoding", "gzip, deflate, br".parse().unwrap());
+        client_headers.insert("authorization", "Bearer token".parse().unwrap());
+
+        let upstream = build_upstream_headers(&client_headers, "https://mastodon.social");
+
+        assert!(
+            upstream.get("accept-encoding").is_none(),
+            "Accept-Encoding should be stripped to prevent gzip responses"
+        );
+        // Other headers should still pass through
+        assert!(upstream.get("authorization").is_some());
+    }
+
+    #[test]
     fn test_is_timeline_endpoint_home() {
         assert!(is_timeline_endpoint("/api/v1/timelines/home"));
         assert!(is_timeline_endpoint("/api/v1/timelines/home?limit=20"));
