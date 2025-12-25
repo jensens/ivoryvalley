@@ -20,7 +20,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Headers that should NOT be forwarded to upstream
-const STRIP_HEADERS: &[&str] = &["host", "connection", "transfer-encoding"];
+/// Note: accept-encoding is stripped to prevent gzip responses, which we need to parse as JSON
+const STRIP_HEADERS: &[&str] = &["host", "connection", "transfer-encoding", "accept-encoding"];
 
 /// Timeline endpoint prefixes that should have deduplication applied
 const TIMELINE_ENDPOINTS: &[&str] = &[
