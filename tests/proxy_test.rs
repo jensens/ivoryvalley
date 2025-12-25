@@ -355,6 +355,26 @@ impl MockTimelineUpstream {
                         .body(Body::from(statuses_json))
                         .unwrap()
                 }),
+            )
+            .route(
+                "/api/v1/timelines/link",
+                get(move || async move {
+                    Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(statuses_json))
+                        .unwrap()
+                }),
+            )
+            .route(
+                "/api/v1/trends/statuses",
+                get(move || async move {
+                    Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(statuses_json))
+                        .unwrap()
+                }),
             );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -698,4 +718,66 @@ async fn test_default_body_limit_allows_normal_requests() {
         .await;
 
     response.assert_status_ok();
+}
+
+// =============================================================================
+// New endpoint filtering tests (Issue #61)
+// =============================================================================
+
+/// Test that filtering works for link timeline endpoint (trending articles).
+#[tokio::test]
+async fn test_timeline_link_filtering() {
+    let statuses = r#"[
+        {"id": "1", "uri": "https://example.com/statuses/1", "content": "<p>Hello</p>"}
+    ]"#;
+
+    let upstream = MockTimelineUpstream::start_with_statuses(statuses).await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+
+    // First request
+    let response = client.get("/api/v1/timelines/link").await;
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body.as_array().unwrap().len(), 1);
+
+    // Second request - should be filtered
+    let response = client.get("/api/v1/timelines/link").await;
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body.as_array().unwrap().len(), 0);
+}
+
+/// Test that filtering works for trends/statuses endpoint (trending statuses).
+#[tokio::test]
+async fn test_trends_statuses_filtering() {
+    let statuses = r#"[
+        {"id": "1", "uri": "https://example.com/statuses/1", "content": "<p>Hello</p>"}
+    ]"#;
+
+    let upstream = MockTimelineUpstream::start_with_statuses(statuses).await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+
+    // First request
+    let response = client.get("/api/v1/trends/statuses").await;
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body.as_array().unwrap().len(), 1);
+
+    // Second request - should be filtered
+    let response = client.get("/api/v1/trends/statuses").await;
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body.as_array().unwrap().len(), 0);
 }
