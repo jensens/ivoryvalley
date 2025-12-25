@@ -11,11 +11,11 @@ Use the `tributary` MCP server for all GitHub operations:
 
 All tools are prefixed with `mcp__tributary_`:
 
+- `start_work`, `complete_issue`
 - `list_issues`, `get_issue`, `create_issue`, `update_issue`
 - `add_comment`, `list_comments`
 - `create_pull_request`, `list_pull_requests`
 - `add_labels`, `remove_labels`, `list_labels`
-- `start_work`, `complete_issue`
 
 ## Working with Epics
 
