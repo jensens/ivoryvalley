@@ -26,6 +26,8 @@ const TIMELINE_ENDPOINTS: &[&str] = &[
     "/api/v1/timelines/public",
     "/api/v1/timelines/list/",
     "/api/v1/timelines/tag/",
+    "/api/v1/timelines/link",
+    "/api/v1/trends/statuses",
 ];
 
 /// Extract the proxy's base URL from the incoming request for redirect rewriting.
@@ -150,10 +152,18 @@ async fn proxy_handler(
     let should_filter = method == Method::GET && is_timeline_endpoint(path);
 
     // Log request path for debugging
+    // All API requests at trace level (useful for discovering which endpoints clients use)
+    if path.starts_with("/api/") {
+        tracing::trace!(
+            "API request: {} {} (dedup: {})",
+            method,
+            path,
+            should_filter
+        );
+    }
+    // Timeline requests with filtering at debug level
     if should_filter {
-        tracing::debug!("Timeline request: {} {}", method, path);
-    } else if path.starts_with("/api/") {
-        tracing::trace!("API request: {} {}", method, path);
+        tracing::debug!("Timeline request (filtering enabled): {} {}", method, path);
     }
 
     // Build the upstream URL
@@ -260,7 +270,30 @@ async fn proxy_handler(
 /// Filter a timeline response, removing statuses that have already been seen.
 ///
 /// Returns the filtered JSON as bytes. If parsing fails, returns the original body unchanged.
+/// Handles edge cases like empty bodies (304 Not Modified) and non-JSON responses (HTML errors).
 fn filter_timeline_response(body: &[u8], state: &AppState) -> Vec<u8> {
+    // Handle empty body (e.g., 304 Not Modified responses)
+    if body.is_empty() {
+        tracing::debug!("Empty timeline response body, passing through");
+        return body.to_vec();
+    }
+
+    // Quick check if response looks like a JSON array (starts with '[')
+    // This avoids trying to parse HTML error pages or other non-JSON content
+    let first_byte = body.first().copied().unwrap_or(0);
+    if first_byte != b'[' {
+        tracing::debug!(
+            "Timeline response is not a JSON array (starts with '{}'{}), passing through",
+            first_byte as char,
+            if body.len() > 1 {
+                format!("{}...", body.get(1).map(|b| *b as char).unwrap_or(' '))
+            } else {
+                String::new()
+            }
+        );
+        return body.to_vec();
+    }
+
     // Try to parse the body as a JSON array of statuses
     let statuses: Vec<serde_json::Value> = match serde_json::from_slice(body) {
         Ok(v) => v,
@@ -529,6 +562,45 @@ mod tests {
         assert!(is_timeline_endpoint(
             "/api/v1/timelines/tag/mastodon?limit=40"
         ));
+    }
+
+    #[test]
+    fn test_is_timeline_endpoint_link() {
+        // Trending article timeline (added in newer Mastodon versions)
+        assert!(is_timeline_endpoint("/api/v1/timelines/link"));
+        assert!(is_timeline_endpoint("/api/v1/timelines/link?limit=20"));
+        assert!(is_timeline_endpoint(
+            "/api/v1/timelines/link?url=https://example.com/article"
+        ));
+    }
+
+    #[test]
+    fn test_is_timeline_endpoint_trends_statuses() {
+        // Trending statuses endpoint
+        assert!(is_timeline_endpoint("/api/v1/trends/statuses"));
+        assert!(is_timeline_endpoint("/api/v1/trends/statuses?limit=20"));
+        assert!(is_timeline_endpoint("/api/v1/trends/statuses?offset=10"));
+    }
+
+    #[test]
+    fn test_is_timeline_endpoint_trends_tags_not_filtered() {
+        // Trends/tags returns Tag objects, not statuses - should NOT be filtered
+        assert!(!is_timeline_endpoint("/api/v1/trends/tags"));
+        assert!(!is_timeline_endpoint("/api/v1/trends/links"));
+    }
+
+    #[test]
+    fn test_is_timeline_endpoint_bookmarks_not_filtered() {
+        // User wants to see all bookmarks, no filtering
+        assert!(!is_timeline_endpoint("/api/v1/bookmarks"));
+        assert!(!is_timeline_endpoint("/api/v1/bookmarks?limit=40"));
+    }
+
+    #[test]
+    fn test_is_timeline_endpoint_favourites_not_filtered() {
+        // User wants to see all favourites, no filtering
+        assert!(!is_timeline_endpoint("/api/v1/favourites"));
+        assert!(!is_timeline_endpoint("/api/v1/favourites?limit=40"));
     }
 
     #[test]
