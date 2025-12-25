@@ -112,15 +112,14 @@ just check
 
 ### Testing with Mastodon Clients
 
-Most Mastodon clients require HTTPS for OAuth. Use Caddy to add local HTTPS:
+Most Mastodon clients require HTTPS for OAuth. Use the built-in HTTPS proxy:
 
 ```bash
-# Install Caddy
-sudo apt install caddy
-
 # Start proxy with HTTPS (available at https://localhost:8443)
 just dev-https
 ```
+
+This uses a Python HTTPS reverse proxy with a self-signed certificate. You'll need to accept the certificate warning in your client.
 
 Then configure your Mastodon client to use `https://localhost:8443` as the server.
 

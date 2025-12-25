@@ -5,7 +5,7 @@
 # Run `just --list` to see all available commands.
 
 # Default upstream for development
-default_upstream := "https://mastodon.social"
+default_upstream := "https://nerdculture.de"
 
 # List available commands
 default:
@@ -23,7 +23,7 @@ release:
 dev upstream=default_upstream:
     cargo run -- --upstream-url {{upstream}} --host 0.0.0.0 --port 8080
 
-# Run the proxy with HTTPS via Caddy (requires: apt install caddy)
+# Run the proxy with HTTPS (uses Python reverse proxy)
 dev-https upstream=default_upstream:
     ./scripts/dev-https.sh {{upstream}}
 
@@ -49,6 +49,11 @@ fmt-check:
 
 # Run all quality checks (use before committing)
 check: test lint fmt-check
+
+# Test WebSocket streaming (run in separate terminal while proxy is running)
+# Usage: just ws-test [stream] [token]
+ws-test stream="public" token="":
+    uv run --with websockets ./scripts/ws-test-client.py --stream {{stream}} {{ if token != "" { "--token " + token } else { "" } }}
 
 # Clean build artifacts
 clean:

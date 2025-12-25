@@ -8,6 +8,10 @@
 *.db
 *.db-journal
 *.db-wal
+*.db-shm
+
+# Generated certificates
+scripts/.certs/
 
 # Editor/IDE
 .idea/

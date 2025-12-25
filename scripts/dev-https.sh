@@ -1,26 +1,34 @@
 #!/usr/bin/env bash
 #
-# Start IvoryValley with HTTPS via Caddy reverse proxy
+# Start IvoryValley with HTTPS via Python reverse proxy
 #
-# This script starts both the IvoryValley proxy and Caddy for local HTTPS testing.
-# Requires: caddy (apt install caddy)
+# This script starts both the IvoryValley proxy and a Python HTTPS proxy.
+# Requires: python3, openssl
 #
 # Usage: ./scripts/dev-https.sh [upstream-url]
 #
 # The proxy will be available at:
 #   - http://localhost:8080  (direct, no HTTPS)
-#   - https://localhost:8443 (via Caddy, with HTTPS)
+#   - https://localhost       (via Python HTTPS proxy, requires sudo)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 UPSTREAM_URL="${1:-https://nerdculture.de}"
+CERT_DIR="$SCRIPT_DIR/.certs"
 
-# Check dependencies
-if ! command -v caddy &> /dev/null; then
-    echo "Error: caddy is not installed. Install with: sudo apt install caddy"
-    exit 1
+# Generate self-signed cert if needed (no system trust store involvement)
+if [[ ! -f "$CERT_DIR/localhost.crt" ]]; then
+    echo "Generating self-signed certificate..."
+    mkdir -p "$CERT_DIR"
+    openssl req -x509 -newkey rsa:4096 -sha256 -days 365 -nodes \
+        -keyout "$CERT_DIR/localhost.key" \
+        -out "$CERT_DIR/localhost.crt" \
+        -subj "/CN=localhost" \
+        -addext "subjectAltName=DNS:localhost,DNS:ivoryvalley.test,IP:127.0.0.1" \
+        2>/dev/null
+    echo "Certificate generated at $CERT_DIR/"
 fi
 
 # Build if needed
@@ -34,7 +42,7 @@ cleanup() {
     echo ""
     echo "Shutting down..."
     kill $PROXY_PID 2>/dev/null || true
-    kill $CADDY_PID 2>/dev/null || true
+    sudo kill $HTTPS_PID 2>/dev/null || true
     exit 0
 }
 
@@ -43,7 +51,7 @@ trap cleanup SIGINT SIGTERM
 echo "Starting IvoryValley proxy..."
 echo "  Upstream: $UPSTREAM_URL"
 echo "  HTTP:     http://localhost:8080"
-echo "  HTTPS:    https://localhost:8443"
+echo "  HTTPS:    https://localhost or https://127.0.0.1.sslip.io (port 443)"
 echo ""
 echo "Press Ctrl+C to stop"
 echo ""
@@ -58,9 +66,9 @@ PROXY_PID=$!
 # Give the proxy a moment to start
 sleep 1
 
-# Start Caddy
-caddy run --config "$SCRIPT_DIR/Caddyfile" &
-CADDY_PID=$!
+# Start Python HTTPS proxy (needs sudo for port 443)
+sudo python3 "$SCRIPT_DIR/https-proxy.py" &
+HTTPS_PID=$!
 
 # Wait for either process to exit
-wait $PROXY_PID $CADDY_PID
+wait $PROXY_PID $HTTPS_PID
