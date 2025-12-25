@@ -3,3 +3,15 @@
 
 # Rust
 /target
+
+# SQLite databases
+*.db
+*.db-journal
+*.db-wal
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

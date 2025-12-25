@@ -94,12 +94,50 @@ IvoryValley supports configuration via:
 
 ## Development
 
-```bash
-# Run tests
-cargo test
+This project uses [just](https://github.com/casey/just) as a command runner. Install with `cargo install just`.
 
+```bash
+# List all available commands
+just
+
+# Run the proxy in development mode
+just dev
+
+# Run all tests
+just test
+
+# Run all quality checks before committing
+just check
+```
+
+### Testing with Mastodon Clients
+
+Most Mastodon clients require HTTPS for OAuth. Use Caddy to add local HTTPS:
+
+```bash
+# Install Caddy
+sudo apt install caddy
+
+# Start proxy with HTTPS (available at https://localhost:8443)
+just dev-https
+```
+
+Then configure your Mastodon client to use `https://localhost:8443` as the server.
+
+**Compatible clients:**
+
+| Client | Platform | Notes |
+|--------|----------|-------|
+| Tuba | Linux (GTK) | `flatpak install flathub dev.geopjr.Tuba` |
+| Tokodon | Linux (KDE) | `apt install tokodon` |
+| Whalebird | Linux | Electron-based, AppImage available |
+| Tusky | Android | Works with HTTPS proxy |
+
+### Manual Commands
+
+```bash
 # Run with logging
-RUST_LOG=ivoryvalley=debug cargo run -- --upstream https://mastodon.social
+RUST_LOG=ivoryvalley=debug cargo run -- --upstream-url https://mastodon.social
 
 # Check code quality
 cargo clippy --all-features -- -D warnings

@@ -1,0 +1,10 @@
+# Caddy configuration for local HTTPS development
+#
+# This creates a reverse proxy on https://localhost:8443 that forwards
+# to the IvoryValley proxy running on http://localhost:8080
+#
+# Caddy automatically generates and trusts a local certificate.
+
+https://localhost:8443 {
+    reverse_proxy localhost:8080
+}
