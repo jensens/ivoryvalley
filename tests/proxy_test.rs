@@ -781,3 +781,73 @@ async fn test_trends_statuses_filtering() {
     let body: serde_json::Value = response.json();
     assert_eq!(body.as_array().unwrap().len(), 0);
 }
+
+/// Test that the proxy strips Accept-Encoding header to prevent gzip responses.
+///
+/// This is critical for deduplication - the proxy must parse JSON responses to
+/// filter duplicates. If upstream returns gzip-compressed data, parsing fails
+/// and deduplication silently breaks.
+#[tokio::test]
+async fn test_accept_encoding_stripped_prevents_gzip() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // Track whether upstream received Accept-Encoding header
+    let received_accept_encoding = Arc::new(AtomicBool::new(false));
+    let received_accept_encoding_clone = received_accept_encoding.clone();
+
+    // Create a mock that checks for Accept-Encoding and returns accordingly
+    let app = Router::new().route(
+        "/api/v1/timelines/home",
+        get(move |headers: axum::http::HeaderMap| async move {
+            let has_accept_encoding = headers.get("accept-encoding").is_some();
+            received_accept_encoding_clone.store(has_accept_encoding, Ordering::SeqCst);
+
+            // Return uncompressed JSON (proxy should never send accept-encoding)
+            axum::Json(serde_json::json!([
+                {"id": "1", "uri": "https://example.com/1", "content": "test"}
+            ]))
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    // Give server time to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+    // Create proxy
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&format!("http://{}", addr), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let proxy_app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(proxy_app).unwrap();
+
+    // Send request WITH Accept-Encoding header (like a real browser would)
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(
+            axum::http::header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, deflate, br"),
+        )
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test"))
+        .await;
+
+    response.assert_status_ok();
+
+    // The proxy should have stripped the Accept-Encoding header
+    assert!(
+        !received_accept_encoding.load(Ordering::SeqCst),
+        "Proxy must strip Accept-Encoding header to prevent gzip responses"
+    );
+
+    // Verify response is valid JSON (deduplication worked)
+    let body: serde_json::Value = response.json();
+    assert_eq!(body.as_array().unwrap().len(), 1);
+}

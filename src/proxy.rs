@@ -14,11 +14,14 @@ use axum::{
 
 use crate::config::{AppState, Config};
 use crate::db::{extract_dedup_uri, SeenUriStore};
+use crate::recording::{now_timestamp, RecordedExchange, RecordedRequest, RecordedResponse};
 use crate::websocket::{streaming_handler, WebSocketState};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Headers that should NOT be forwarded to upstream
-const STRIP_HEADERS: &[&str] = &["host", "connection", "transfer-encoding"];
+/// Note: accept-encoding is stripped to prevent gzip responses, which we need to parse as JSON
+const STRIP_HEADERS: &[&str] = &["host", "connection", "transfer-encoding", "accept-encoding"];
 
 /// Timeline endpoint prefixes that should have deduplication applied
 const TIMELINE_ENDPOINTS: &[&str] = &[
@@ -143,13 +146,33 @@ async fn proxy_handler(
         .uri()
         .path_and_query()
         .map(|pq| pq.as_str())
-        .unwrap_or("/");
+        .unwrap_or("/")
+        .to_string();
 
     // Capture the proxy's base URL from the Host header for rewriting redirects
     let proxy_base_url = get_proxy_base_url(request.headers(), request.uri());
 
     // Determine if this is a timeline endpoint that should be filtered
-    let should_filter = method == Method::GET && is_timeline_endpoint(path);
+    let should_filter = method == Method::GET && is_timeline_endpoint(&path);
+
+    // Check if we should record this request (only API requests)
+    let should_record = state.traffic_recorder.is_some() && path.starts_with("/api/");
+
+    // Capture request headers for recording
+    let request_headers_for_recording: HashMap<String, String> = if should_record {
+        request
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|v| (name.as_str().to_string(), v.to_string()))
+            })
+            .collect()
+    } else {
+        HashMap::new()
+    };
 
     // Log request path for debugging
     // All API requests at trace level (useful for discovering which endpoints clients use)
@@ -180,22 +203,34 @@ async fn proxy_handler(
         }
     }
 
-    // Forward body for methods that have one
-    if method == Method::POST || method == Method::PUT || method == Method::PATCH {
-        let max_body_size = state.config.max_body_size;
-        let body_bytes = axum::body::to_bytes(request.into_body(), max_body_size)
-            .await
-            .map_err(|e| {
-                // Check if this is a length limit error
-                let error_msg = e.to_string();
-                if error_msg.contains("length limit exceeded") {
-                    ProxyError::PayloadTooLarge
-                } else {
-                    ProxyError::BodyRead(error_msg)
-                }
-            })?;
-        upstream_request = upstream_request.body(body_bytes);
-    }
+    // Forward body for methods that have one, capturing for recording if needed
+    let request_body_for_recording: Option<String> =
+        if method == Method::POST || method == Method::PUT || method == Method::PATCH {
+            let max_body_size = state.config.max_body_size;
+            let body_bytes = axum::body::to_bytes(request.into_body(), max_body_size)
+                .await
+                .map_err(|e| {
+                    // Check if this is a length limit error
+                    let error_msg = e.to_string();
+                    if error_msg.contains("length limit exceeded") {
+                        ProxyError::PayloadTooLarge
+                    } else {
+                        ProxyError::BodyRead(error_msg)
+                    }
+                })?;
+
+            // Capture body for recording (as UTF-8 string if possible)
+            let body_for_recording = if should_record {
+                String::from_utf8(body_bytes.to_vec()).ok()
+            } else {
+                None
+            };
+
+            upstream_request = upstream_request.body(body_bytes);
+            body_for_recording
+        } else {
+            None
+        };
 
     // Send request to upstream
     let upstream_response = upstream_request.send().await.map_err(|e| {
@@ -213,6 +248,40 @@ async fn proxy_handler(
         .bytes()
         .await
         .map_err(|e| ProxyError::ResponseRead(e.to_string()))?;
+
+    // Record the exchange if traffic recording is enabled
+    if should_record {
+        if let Some(ref recorder) = state.traffic_recorder {
+            let response_headers_map: HashMap<String, String> = response_headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|v| (name.as_str().to_string(), v.to_string()))
+                })
+                .collect();
+
+            let exchange = RecordedExchange {
+                timestamp: now_timestamp(),
+                request: RecordedRequest {
+                    method: method.to_string(),
+                    path: path.clone(),
+                    headers: request_headers_for_recording,
+                    body: request_body_for_recording,
+                },
+                response: RecordedResponse {
+                    status: status.as_u16(),
+                    headers: response_headers_map,
+                    body: String::from_utf8_lossy(&body).to_string(),
+                },
+            };
+
+            if let Err(e) = recorder.record(&exchange) {
+                tracing::warn!("Failed to record traffic: {}", e);
+            }
+        }
+    }
 
     // Filter timeline responses if applicable
     let final_body = if should_filter && status.is_success() {
@@ -531,6 +600,24 @@ mod tests {
             upstream.get("referer").unwrap(),
             "https://nerdculture.de/auth/sign_in"
         );
+    }
+
+    #[test]
+    fn test_build_upstream_headers_strips_accept_encoding() {
+        // Accept-Encoding must be stripped to prevent gzip responses
+        // that the proxy cannot parse for deduplication
+        let mut client_headers = HeaderMap::new();
+        client_headers.insert("accept-encoding", "gzip, deflate, br".parse().unwrap());
+        client_headers.insert("authorization", "Bearer token".parse().unwrap());
+
+        let upstream = build_upstream_headers(&client_headers, "https://mastodon.social");
+
+        assert!(
+            upstream.get("accept-encoding").is_none(),
+            "Accept-Encoding should be stripped to prevent gzip responses"
+        );
+        // Other headers should still pass through
+        assert!(upstream.get("authorization").is_some());
     }
 
     #[test]

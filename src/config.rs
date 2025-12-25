@@ -28,6 +28,8 @@ const DEFAULT_MAX_BODY_SIZE: usize = 50 * 1024 * 1024;
 const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 /// Default HTTP request timeout in seconds
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
+/// Default recording path (None = disabled)
+const DEFAULT_RECORD_TRAFFIC_PATH: Option<&str> = None;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -62,6 +64,10 @@ pub struct CliArgs {
     #[arg(long, env = "IVORYVALLEY_REQUEST_TIMEOUT_SECS")]
     pub request_timeout_secs: Option<u64>,
 
+    /// Path to record traffic (JSONL file). If set, all request/response pairs are recorded.
+    #[arg(long, env = "IVORYVALLEY_RECORD_TRAFFIC_PATH")]
+    pub record_traffic_path: Option<PathBuf>,
+
     /// Path to configuration file
     #[arg(short, long, env = "IVORYVALLEY_CONFIG")]
     pub config: Option<PathBuf>,
@@ -78,6 +84,7 @@ struct FileConfig {
     max_body_size: Option<usize>,
     connect_timeout_secs: Option<u64>,
     request_timeout_secs: Option<u64>,
+    record_traffic_path: Option<PathBuf>,
 }
 
 /// Configuration for the IvoryValley proxy server
@@ -103,6 +110,9 @@ pub struct Config {
 
     /// HTTP client request timeout in seconds
     pub request_timeout_secs: u64,
+
+    /// Path to record traffic (JSONL file). If Some, all traffic is recorded.
+    pub record_traffic_path: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -115,6 +125,7 @@ impl Default for Config {
             max_body_size: DEFAULT_MAX_BODY_SIZE,
             connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
             request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
+            record_traffic_path: DEFAULT_RECORD_TRAFFIC_PATH.map(PathBuf::from),
         }
     }
 }
@@ -131,6 +142,7 @@ impl Config {
             max_body_size: DEFAULT_MAX_BODY_SIZE,
             connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
             request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
+            record_traffic_path: None,
         }
     }
 
@@ -151,6 +163,7 @@ impl Config {
             max_body_size,
             connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
             request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
+            record_traffic_path: None,
         }
     }
 
@@ -189,6 +202,9 @@ impl Config {
         if let Some(rt) = file_config.request_timeout_secs {
             config.request_timeout_secs = rt;
         }
+        if let Some(path) = file_config.record_traffic_path {
+            config.record_traffic_path = Some(path);
+        }
 
         // Apply CLI args (CLI overrides everything)
         if let Some(url) = args.upstream_url {
@@ -211,6 +227,9 @@ impl Config {
         }
         if let Some(rt) = args.request_timeout_secs {
             config.request_timeout_secs = rt;
+        }
+        if let Some(path) = args.record_traffic_path {
+            config.record_traffic_path = Some(path);
         }
 
         Ok(config)
@@ -253,6 +272,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub http_client: reqwest::Client,
     pub seen_uri_store: Arc<crate::db::SeenUriStore>,
+    pub traffic_recorder: Option<Arc<crate::recording::TrafficRecorder>>,
 }
 
 impl AppState {
@@ -268,10 +288,25 @@ impl AppState {
             .build()
             .expect("Failed to create HTTP client");
 
+        // Initialize traffic recorder if configured
+        let traffic_recorder = config.record_traffic_path.as_ref().and_then(|path| {
+            match crate::recording::TrafficRecorder::new(path.clone()) {
+                Ok(recorder) => {
+                    tracing::info!("Traffic recording enabled: {}", path.display());
+                    Some(Arc::new(recorder))
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize traffic recorder: {}", e);
+                    None
+                }
+            }
+        });
+
         Self {
             config: Arc::new(config),
             http_client,
             seen_uri_store: seen_store,
+            traffic_recorder,
         }
     }
 }
@@ -329,6 +364,7 @@ mod tests {
             max_body_size: None,
             connect_timeout_secs: None,
             request_timeout_secs: None,
+            record_traffic_path: None,
             config: None,
         };
         let config = Config::load_from_args(args).unwrap();
@@ -339,6 +375,7 @@ mod tests {
         assert_eq!(config.max_body_size, 50 * 1024 * 1024);
         assert_eq!(config.connect_timeout_secs, 10);
         assert_eq!(config.request_timeout_secs, 30);
+        assert_eq!(config.record_traffic_path, None);
     }
 
     #[test]
@@ -351,6 +388,7 @@ mod tests {
             max_body_size: Some(100 * 1024 * 1024),
             connect_timeout_secs: Some(5),
             request_timeout_secs: Some(60),
+            record_traffic_path: Some(PathBuf::from("/tmp/traffic.jsonl")),
             config: None,
         };
         let config = Config::load_from_args(args).unwrap();
@@ -361,6 +399,10 @@ mod tests {
         assert_eq!(config.max_body_size, 100 * 1024 * 1024);
         assert_eq!(config.connect_timeout_secs, 5);
         assert_eq!(config.request_timeout_secs, 60);
+        assert_eq!(
+            config.record_traffic_path,
+            Some(PathBuf::from("/tmp/traffic.jsonl"))
+        );
     }
 
     #[test]
@@ -387,6 +429,7 @@ request_timeout_secs = 45
             max_body_size: None,
             connect_timeout_secs: None,
             request_timeout_secs: None,
+            record_traffic_path: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -422,6 +465,7 @@ request_timeout_secs: 120
             max_body_size: None,
             connect_timeout_secs: None,
             request_timeout_secs: None,
+            record_traffic_path: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -457,6 +501,7 @@ request_timeout_secs = 45
             max_body_size: None,
             connect_timeout_secs: Some(5), // Override file value
             request_timeout_secs: None,    // Use file value
+            record_traffic_path: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -487,6 +532,7 @@ upstream_url = "https://partial.example.com"
             max_body_size: None,
             connect_timeout_secs: None,
             request_timeout_secs: None,
+            record_traffic_path: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -497,5 +543,6 @@ upstream_url = "https://partial.example.com"
         assert_eq!(config.max_body_size, 50 * 1024 * 1024); // Default 50MB
         assert_eq!(config.connect_timeout_secs, 10); // Default
         assert_eq!(config.request_timeout_secs, 30); // Default
+        assert_eq!(config.record_traffic_path, None); // Default
     }
 }
