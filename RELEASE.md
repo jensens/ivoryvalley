@@ -4,6 +4,14 @@ This document describes how to create a new release of IvoryValley.
 
 ## Prerequisites
 
+### GitHub Environment Setup
+
+Create a GitHub Environment for deployment protection:
+
+1. Go to Repository Settings → Environments → New environment
+2. Name: `release`
+3. Optional: Add required reviewers for manual approval before publishing
+
 ### Trusted Publishing Setup (crates.io)
 
 This project uses [Trusted Publishing](https://crates.io/docs/trusted-publishing) for secure,
@@ -23,11 +31,11 @@ token-free publishing to crates.io via OIDC.
    - Repository owner: `jensens`
    - Repository name: `ivoryvalley`
    - Workflow filename: `release.yml`
-   - Leave "Environment" empty
+   - Environment: `release`
    - Click "Add"
 
 After setup, all subsequent releases will authenticate automatically via GitHub's OIDC provider.
-No API tokens or secrets needed.
+No API tokens or secrets needed. The environment name is part of the OIDC claim for added security.
 
 ## Creating a Release
 
@@ -110,11 +118,14 @@ Common issues:
 
 ### crates.io Publish Failure
 
+- Verify the `release` environment exists in GitHub repository settings
 - Verify Trusted Publishing is configured at https://crates.io/crates/ivoryvalley/settings
 - Check that workflow filename matches exactly: `release.yml`
+- Check that environment matches exactly: `release`
 - Ensure version in `Cargo.toml` is higher than the published version
 - Check that all required metadata is present in `Cargo.toml`
 - Verify the workflow has `id-token: write` permission
+- If environment protection rules are enabled, ensure the deployment was approved
 
 ### Manual Publishing
 
