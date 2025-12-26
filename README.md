@@ -80,20 +80,44 @@ cargo build --release
 
 The binary will be at `target/release/ivoryvalley`.
 
+## Quick Start
+
+### 1. Start IvoryValley
+
+```bash
+# Using Docker (recommended)
+docker run -d -p 8080:8080 \
+  -v ivoryvalley-data:/data \
+  -e IVORYVALLEY_UPSTREAM_URL=https://mastodon.social \
+  ghcr.io/jensens/ivoryvalley:latest
+
+# Or using the binary directly
+ivoryvalley --upstream-url https://mastodon.social
+```
+
+### 2. Configure Your Client
+
+Point your Mastodon client to `http://localhost:8080` instead of your instance URL. See [Client Setup](#client-setup) for detailed instructions.
+
+### 3. Log In Normally
+
+Use your regular credentials. IvoryValley passes authentication through to your instance transparently.
+
 ## Usage
 
 ```bash
 # Basic usage
-ivoryvalley --upstream https://mastodon.social
+ivoryvalley --upstream-url https://mastodon.social
 
-# With custom port
-ivoryvalley --upstream https://mastodon.social --port 8080
+# With custom host and port
+ivoryvalley --upstream-url https://mastodon.social --host 127.0.0.1 --port 3000
 
 # With environment variables
-IVORYVALLEY_UPSTREAM=https://mastodon.social ivoryvalley
-```
+IVORYVALLEY_UPSTREAM_URL=https://mastodon.social ivoryvalley
 
-Then configure your Mastodon client to use `http://localhost:8080` (or your chosen port) as the server URL instead of your actual instance.
+# With a config file
+ivoryvalley --config /path/to/ivoryvalley.toml
+```
 
 ## Configuration
 
@@ -101,16 +125,42 @@ IvoryValley supports configuration via:
 
 1. **CLI arguments** (highest priority)
 2. **Environment variables** (prefixed with `IVORYVALLEY_`)
-3. **Config file** (`ivoryvalley.toml`)
+3. **Config file** (`config.toml`, `config.yaml`, `ivoryvalley.toml`, or `ivoryvalley.yaml`)
+4. **Default values**
 
-### Options
+### Configuration Options
 
 | Option | Env Variable | Default | Description |
 |--------|--------------|---------|-------------|
-| `--upstream` | `IVORYVALLEY_UPSTREAM` | - | Upstream Mastodon instance URL (required) |
-| `--host` | `IVORYVALLEY_HOST` | `127.0.0.1` | Address to bind to |
-| `--port` | `IVORYVALLEY_PORT` | `3000` | Port to listen on |
-| `--database` | `IVORYVALLEY_DATABASE` | `ivoryvalley.db` | SQLite database path |
+| `--upstream-url` | `IVORYVALLEY_UPSTREAM_URL` | `https://mastodon.social` | Upstream Mastodon instance URL |
+| `--host` | `IVORYVALLEY_HOST` | `0.0.0.0` | Address to bind to |
+| `-p, --port` | `IVORYVALLEY_PORT` | `8080` | Port to listen on |
+| `--database-path` | `IVORYVALLEY_DATABASE_PATH` | `ivoryvalley.db` | SQLite database path |
+| `--max-body-size` | `IVORYVALLEY_MAX_BODY_SIZE` | `52428800` (50MB) | Maximum request body size in bytes |
+| `--connect-timeout-secs` | `IVORYVALLEY_CONNECT_TIMEOUT_SECS` | `10` | HTTP connection timeout in seconds |
+| `--request-timeout-secs` | `IVORYVALLEY_REQUEST_TIMEOUT_SECS` | `30` | HTTP request timeout in seconds |
+| `--record-traffic-path` | `IVORYVALLEY_RECORD_TRAFFIC_PATH` | - | Path to record traffic (JSONL format) |
+| `-c, --config` | `IVORYVALLEY_CONFIG` | - | Path to configuration file |
+
+### Config File Example
+
+Create an `ivoryvalley.toml` file:
+
+```toml
+upstream_url = "https://mastodon.social"
+host = "127.0.0.1"
+port = 8080
+database_path = "/var/lib/ivoryvalley/seen.db"
+```
+
+Or `ivoryvalley.yaml`:
+
+```yaml
+upstream_url: "https://mastodon.social"
+host: "127.0.0.1"
+port: 8080
+database_path: "/var/lib/ivoryvalley/seen.db"
+```
 
 ## How It Works
 
@@ -122,6 +172,168 @@ IvoryValley supports configuration via:
    - Filters out duplicates
    - Records new URIs as seen
 4. Returns filtered response to client
+
+## Client Setup
+
+IvoryValley works with any Mastodon-compatible client. You simply change the server URL from your instance (e.g., `https://mastodon.social`) to IvoryValley (e.g., `http://localhost:8080`).
+
+### Important Notes
+
+- **HTTP vs HTTPS**: Most mobile clients require HTTPS for OAuth. If you're running IvoryValley locally, you'll need to use the HTTPS development proxy (see below) or set up a reverse proxy with a valid certificate.
+- **Authentication**: Your login credentials and OAuth tokens are passed through to the upstream server. IvoryValley does not store or access them.
+- **Same Instance**: Make sure to configure IvoryValley with the same upstream URL as your Mastodon account.
+
+### Desktop Clients
+
+#### Tuba (Linux GTK)
+
+1. Install: `flatpak install flathub dev.geopjr.Tuba`
+2. Open Tuba and click "Add Account"
+3. Enter `http://localhost:8080` (or `https://localhost:8443` for HTTPS) as the instance
+4. Log in with your normal Mastodon credentials
+
+#### Tokodon (Linux KDE)
+
+1. Install: `apt install tokodon` or via your package manager
+2. Open Tokodon and add a new account
+3. Enter `http://localhost:8080` as the server URL
+4. Complete the OAuth flow normally
+
+#### Whalebird (Cross-platform)
+
+1. Download from [Whalebird releases](https://github.com/h3poteto/whalebird-desktop/releases)
+2. Add new account and enter `http://localhost:8080` as the instance
+3. Log in with your credentials
+
+### Mobile Clients
+
+Mobile clients require HTTPS. You need to deploy IvoryValley behind a reverse proxy with a valid SSL certificate.
+
+**Recommended: Deploy with a Reverse Proxy**
+
+Use Caddy, nginx, or Traefik with a valid SSL certificate. This enables full functionality including WebSocket streaming.
+
+Example with Caddy:
+```
+ivoryvalley.example.com {
+    reverse_proxy localhost:8080
+}
+```
+
+#### Tusky (Android)
+
+1. Deploy IvoryValley with a valid HTTPS certificate
+2. Open Tusky and tap "Log in"
+3. Enter your IvoryValley URL as the instance
+4. Complete the OAuth login
+
+#### Ivory / Ice Cubes / Mona (iOS)
+
+1. Deploy IvoryValley with a valid HTTPS certificate (iOS requires valid certificates)
+2. Enter your IvoryValley URL as the instance
+3. Log in normally
+
+### Web Clients
+
+You can also access Mastodon's web interface through IvoryValley:
+
+```bash
+# Open in browser
+xdg-open http://localhost:8080
+```
+
+Note that the web interface works best with HTTPS for all features.
+
+## Troubleshooting
+
+### Connection Issues
+
+**"Connection refused" error**
+
+- Ensure IvoryValley is running: check with `curl http://localhost:8080/api/v1/instance`
+- Verify the port isn't blocked by a firewall
+- Check if another service is using port 8080
+
+**"Timeout" errors**
+
+- Check if the upstream server is reachable: `curl https://mastodon.social/api/v1/instance`
+- Increase timeout settings if on a slow connection:
+  ```bash
+  ivoryvalley --upstream-url https://mastodon.social \
+    --connect-timeout-secs 30 \
+    --request-timeout-secs 120
+  ```
+
+### Authentication Issues
+
+**OAuth login fails or redirects to wrong URL**
+
+- Make sure your client is configured to use the IvoryValley URL (not the upstream instance)
+- For HTTPS, ensure the certificate is accepted/trusted
+
+**"Unauthorized" errors after login**
+
+- Your token may have expired; try logging in again
+- Make sure the upstream URL exactly matches your Mastodon instance
+
+### Deduplication Issues
+
+**Duplicates still appear**
+
+- IvoryValley only filters posts it has seen before; the first occurrence always appears
+- Check if the database file exists and is writable
+- Duplicates in notifications are expected (only timeline endpoints are filtered)
+
+**Want to reset seen posts?**
+
+Delete the database file to start fresh:
+
+```bash
+# Find the database location
+ls -la ivoryvalley.db
+
+# Stop IvoryValley, delete database, restart
+rm ivoryvalley.db
+```
+
+### Docker Issues
+
+**Container won't start**
+
+- Check logs: `docker logs ivoryvalley`
+- Ensure the `IVORYVALLEY_UPSTREAM_URL` environment variable is set
+
+**Database not persisting**
+
+- Make sure you're using a volume: `-v ivoryvalley-data:/data`
+- Check volume permissions: the container runs as user 1000
+
+### Logging and Debugging
+
+Enable debug logging to see detailed information:
+
+```bash
+# With the binary
+RUST_LOG=ivoryvalley=debug ivoryvalley --upstream-url https://mastodon.social
+
+# With Docker
+docker run -e RUST_LOG=ivoryvalley=debug \
+  -e IVORYVALLEY_UPSTREAM_URL=https://mastodon.social \
+  ghcr.io/jensens/ivoryvalley:latest
+```
+
+Log levels: `error`, `warn`, `info`, `debug`, `trace`
+
+### Recording Traffic for Debugging
+
+If you need to debug API issues, you can record all traffic:
+
+```bash
+ivoryvalley --upstream-url https://mastodon.social \
+  --record-traffic-path /tmp/traffic.jsonl
+```
+
+This creates a JSONL file with all request/response pairs.
 
 ## Development
 
@@ -141,27 +353,17 @@ just test
 just check
 ```
 
-### Testing with Mastodon Clients
+### Testing with Clients
 
-Most Mastodon clients require HTTPS for OAuth. Use the built-in HTTPS proxy:
+See [Client Setup](#client-setup) for detailed client configuration.
+
+For quick HTTPS testing with the **web interface only**:
 
 ```bash
-# Start proxy with HTTPS (available at https://localhost:8443)
 just dev-https
 ```
 
-This uses a Python HTTPS reverse proxy with a self-signed certificate. You'll need to accept the certificate warning in your client.
-
-Then configure your Mastodon client to use `https://localhost:8443` as the server.
-
-**Compatible clients:**
-
-| Client | Platform | Notes |
-|--------|----------|-------|
-| Tuba | Linux (GTK) | `flatpak install flathub dev.geopjr.Tuba` |
-| Tokodon | Linux (KDE) | `apt install tokodon` |
-| Whalebird | Linux | Electron-based, AppImage available |
-| Tusky | Android | Works with HTTPS proxy |
+Note: The development HTTPS proxy does not support WebSocket connections, so native clients (desktop/mobile apps) won't have working streaming. For full client testing, deploy with a proper reverse proxy like Caddy.
 
 ### Manual Commands
 
