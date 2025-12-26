@@ -52,3 +52,10 @@ axum-test = "17"
 
 # Better test assertions
 pretty_assertions = "1"
+
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
+[[bench]]
+name = "performance"
+harness = false
