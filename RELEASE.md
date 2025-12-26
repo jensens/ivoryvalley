@@ -4,17 +4,30 @@ This document describes how to create a new release of IvoryValley.
 
 ## Prerequisites
 
-### GitHub Environment Setup
+### Trusted Publishing Setup (crates.io)
 
-1. Create a GitHub Environment named `release`:
-   - Go to Repository Settings → Environments → New environment
-   - Name: `release`
-   - Optional: Add required reviewers for manual approval before publishing
+This project uses [Trusted Publishing](https://crates.io/docs/trusted-publishing) for secure,
+token-free publishing to crates.io via OIDC.
 
-2. Add the following secret to the `release` environment:
-   - `CRATES_IO_TOKEN`: API token for publishing to crates.io
-     - Generate at: https://crates.io/settings/tokens
-     - Required permissions: publish-new, publish-update
+**Initial Setup (one-time, after first manual publish):**
+
+1. Publish the first release manually:
+   ```bash
+   cargo publish
+   ```
+
+2. Configure Trusted Publishing on crates.io:
+   - Go to https://crates.io/crates/ivoryvalley/settings
+   - Under "Trusted Publishing", click "Add"
+   - Select "GitHub Actions"
+   - Repository owner: `jensens`
+   - Repository name: `ivoryvalley`
+   - Workflow filename: `release.yml`
+   - Leave "Environment" empty
+   - Click "Add"
+
+After setup, all subsequent releases will authenticate automatically via GitHub's OIDC provider.
+No API tokens or secrets needed.
 
 ## Creating a Release
 
@@ -97,19 +110,21 @@ Common issues:
 
 ### crates.io Publish Failure
 
-- Verify the `release` environment exists in repository settings
-- Verify `CRATES_IO_TOKEN` secret is set in the `release` environment and not expired
-- If environment protection rules are enabled, ensure the deployment was approved
+- Verify Trusted Publishing is configured at https://crates.io/crates/ivoryvalley/settings
+- Check that workflow filename matches exactly: `release.yml`
 - Ensure version in `Cargo.toml` is higher than the published version
 - Check that all required metadata is present in `Cargo.toml`
+- Verify the workflow has `id-token: write` permission
 
 ### Manual Publishing
 
 If automated publishing fails, you can publish manually:
 
 ```bash
-cargo publish --token $CRATES_IO_TOKEN
+cargo publish
 ```
+
+Note: This requires you to be logged in via `cargo login`.
 
 ## Installation from Release
 
