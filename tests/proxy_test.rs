@@ -851,3 +851,400 @@ async fn test_accept_encoding_stripped_prevents_gzip() {
     let body: serde_json::Value = response.json();
     assert_eq!(body.as_array().unwrap().len(), 1);
 }
+
+// =============================================================================
+// Legitimate message tests (Issue #20)
+// These tests verify that deduplication doesn't drop valid content.
+// =============================================================================
+
+/// Test that same content from different authors is NOT deduplicated.
+/// Each author's post has a unique URI, so both should pass through.
+#[tokio::test]
+async fn test_same_content_different_authors_not_deduplicated() {
+    // Two posts with identical content but different URIs (different authors)
+    let statuses = r#"[
+        {"id": "1", "uri": "https://alice.example/statuses/1", "content": "<p>Hello World</p>"},
+        {"id": "2", "uri": "https://bob.example/statuses/2", "content": "<p>Hello World</p>"}
+    ]"#;
+
+    let upstream = MockTimelineUpstream::start_with_statuses(statuses).await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let statuses = body.as_array().unwrap();
+
+    // Both statuses should pass through - same content, but different URIs
+    assert_eq!(statuses.len(), 2);
+    assert_eq!(statuses[0]["id"], "1");
+    assert_eq!(statuses[1]["id"], "2");
+}
+
+/// Test that a reply passes through even when its parent was already seen.
+/// Replies have their own URI, independent of the parent.
+#[tokio::test]
+async fn test_reply_passes_through_with_seen_parent() {
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+
+    // Pre-mark the parent as seen
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    seen_store
+        .mark_seen("https://example.com/statuses/1")
+        .unwrap();
+
+    // Reply has its own URI
+    let statuses = r#"[
+        {"id": "2", "uri": "https://example.com/statuses/2", "in_reply_to_id": "1", "content": "<p>This is a reply</p>"}
+    ]"#;
+
+    let upstream = MockTimelineUpstream::start_with_statuses(statuses).await;
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+
+    // Reply should pass through - it has its own URI
+    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["id"], "2");
+}
+
+/// Test that all statuses in a thread pass through.
+/// Each status in a thread has its own unique URI.
+#[tokio::test]
+async fn test_thread_all_statuses_pass_through() {
+    let statuses = r#"[
+        {"id": "1", "uri": "https://example.com/statuses/1", "content": "<p>Original post</p>"},
+        {"id": "2", "uri": "https://example.com/statuses/2", "in_reply_to_id": "1", "content": "<p>First reply</p>"},
+        {"id": "3", "uri": "https://example.com/statuses/3", "in_reply_to_id": "2", "content": "<p>Reply to reply</p>"}
+    ]"#;
+
+    let upstream = MockTimelineUpstream::start_with_statuses(statuses).await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let statuses = body.as_array().unwrap();
+
+    // All three statuses should pass through
+    assert_eq!(statuses.len(), 3);
+    assert_eq!(statuses[0]["id"], "1");
+    assert_eq!(statuses[1]["id"], "2");
+    assert_eq!(statuses[2]["id"], "3");
+}
+
+/// Test that posts from different instances with the same ID are not deduplicated.
+/// Deduplication is based on URI, not ID. Different instances can have the same ID.
+#[tokio::test]
+async fn test_cross_instance_same_id_different_uri() {
+    // Same ID but different URIs (from different instances)
+    let statuses = r#"[
+        {"id": "123", "uri": "https://instance-a.social/statuses/123", "content": "<p>From instance A</p>"},
+        {"id": "123", "uri": "https://instance-b.social/statuses/123", "content": "<p>From instance B</p>"}
+    ]"#;
+
+    let upstream = MockTimelineUpstream::start_with_statuses(statuses).await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let statuses = body.as_array().unwrap();
+
+    // Both should pass through - same ID but different URIs
+    assert_eq!(statuses.len(), 2);
+}
+
+// =============================================================================
+// Non-filtered endpoint tests (Issue #20)
+// These tests verify that certain endpoints are NOT filtered.
+// =============================================================================
+
+/// Mock upstream server for non-timeline endpoints
+struct MockNonTimelineUpstream {
+    pub addr: SocketAddr,
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl MockNonTimelineUpstream {
+    async fn start_with_statuses(statuses_json: &'static str) -> Self {
+        let app = Router::new()
+            .route(
+                "/api/v1/accounts/{account_id}/statuses",
+                get(move || async move {
+                    Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(statuses_json))
+                        .unwrap()
+                }),
+            )
+            .route(
+                "/api/v1/statuses/{status_id}/context",
+                get(move || async move {
+                    // Context returns ancestors and descendants
+                    let context =
+                        format!(r#"{{"ancestors": {}, "descendants": []}}"#, statuses_json);
+                    Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(context))
+                        .unwrap()
+                }),
+            )
+            .route(
+                "/api/v1/bookmarks",
+                get(move || async move {
+                    Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(statuses_json))
+                        .unwrap()
+                }),
+            )
+            .route(
+                "/api/v1/favourites",
+                get(move || async move {
+                    Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(statuses_json))
+                        .unwrap()
+                }),
+            );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        Self {
+            addr,
+            shutdown_tx: Some(shutdown_tx),
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+}
+
+impl Drop for MockNonTimelineUpstream {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+/// Test that account statuses are NOT filtered, even if already seen.
+/// Users should always see all statuses when viewing a profile.
+#[tokio::test]
+async fn test_account_statuses_not_filtered() {
+    let statuses = r#"[
+        {"id": "1", "uri": "https://example.com/statuses/1", "content": "<p>Hello</p>"}
+    ]"#;
+
+    let upstream = MockNonTimelineUpstream::start_with_statuses(statuses).await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+
+    // Pre-mark the status as seen
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    seen_store
+        .mark_seen("https://example.com/statuses/1")
+        .unwrap();
+
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+
+    // First request - should pass through (no filtering on account statuses)
+    let response = client
+        .get("/api/v1/accounts/12345/statuses")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+
+    // Status should appear even though it was pre-marked as seen
+    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["id"], "1");
+
+    // Second request - should still pass through
+    let response = client
+        .get("/api/v1/accounts/12345/statuses")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body.as_array().unwrap().len(), 1);
+}
+
+/// Test that thread context is NOT filtered, even if statuses were already seen.
+/// Users should always see the full thread when viewing context.
+#[tokio::test]
+async fn test_thread_context_not_filtered() {
+    let statuses = r#"[
+        {"id": "1", "uri": "https://example.com/statuses/1", "content": "<p>Parent</p>"}
+    ]"#;
+
+    let upstream = MockNonTimelineUpstream::start_with_statuses(statuses).await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+
+    // Pre-mark the status as seen
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    seen_store
+        .mark_seen("https://example.com/statuses/1")
+        .unwrap();
+
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+
+    // Request thread context - should not be filtered
+    let response = client
+        .get("/api/v1/statuses/999/context")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+
+    // Ancestors should contain the status even though it was pre-marked as seen
+    let ancestors = body["ancestors"].as_array().unwrap();
+    assert_eq!(ancestors.len(), 1);
+    assert_eq!(ancestors[0]["id"], "1");
+}
+
+/// Test that bookmarks are NOT filtered, even if already seen.
+/// Users should always see all their bookmarks.
+#[tokio::test]
+async fn test_bookmarks_not_filtered() {
+    let statuses = r#"[
+        {"id": "1", "uri": "https://example.com/statuses/1", "content": "<p>Bookmarked</p>"}
+    ]"#;
+
+    let upstream = MockNonTimelineUpstream::start_with_statuses(statuses).await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+
+    // Pre-mark the status as seen
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    seen_store
+        .mark_seen("https://example.com/statuses/1")
+        .unwrap();
+
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+
+    // Request bookmarks - should not be filtered
+    let response = client
+        .get("/api/v1/bookmarks")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+
+    // Bookmark should appear even though it was pre-marked as seen
+    assert_eq!(body.as_array().unwrap().len(), 1);
+
+    // Second request - should still appear
+    let response = client
+        .get("/api/v1/bookmarks")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body.as_array().unwrap().len(), 1);
+}
+
+/// Test that favourites are NOT filtered, even if already seen.
+/// Users should always see all their favourites.
+#[tokio::test]
+async fn test_favourites_not_filtered() {
+    let statuses = r#"[
+        {"id": "1", "uri": "https://example.com/statuses/1", "content": "<p>Favourited</p>"}
+    ]"#;
+
+    let upstream = MockNonTimelineUpstream::start_with_statuses(statuses).await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+
+    // Pre-mark the status as seen
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    seen_store
+        .mark_seen("https://example.com/statuses/1")
+        .unwrap();
+
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+
+    // Request favourites - should not be filtered
+    let response = client
+        .get("/api/v1/favourites")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+
+    // Favourite should appear even though it was pre-marked as seen
+    assert_eq!(body.as_array().unwrap().len(), 1);
+}
