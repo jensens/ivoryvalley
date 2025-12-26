@@ -1,5 +1,7 @@
 .worktrees/
 .mcp.json
+.tributary.yaml
+.claude/settings.local.json
 
 # Rust
 /target
