@@ -4,13 +4,17 @@ This document describes how to create a new release of IvoryValley.
 
 ## Prerequisites
 
-### GitHub Repository Secrets
+### GitHub Environment Setup
 
-The following secret must be configured in the GitHub repository settings:
+1. Create a GitHub Environment named `release`:
+   - Go to Repository Settings → Environments → New environment
+   - Name: `release`
+   - Optional: Add required reviewers for manual approval before publishing
 
-- `CRATES_IO_TOKEN`: API token for publishing to crates.io
-  - Generate at: https://crates.io/settings/tokens
-  - Required permissions: publish-new, publish-update
+2. Add the following secret to the `release` environment:
+   - `CRATES_IO_TOKEN`: API token for publishing to crates.io
+     - Generate at: https://crates.io/settings/tokens
+     - Required permissions: publish-new, publish-update
 
 ## Creating a Release
 
@@ -93,7 +97,9 @@ Common issues:
 
 ### crates.io Publish Failure
 
-- Verify `CRATES_IO_TOKEN` secret is set and not expired
+- Verify the `release` environment exists in repository settings
+- Verify `CRATES_IO_TOKEN` secret is set in the `release` environment and not expired
+- If environment protection rules are enabled, ensure the deployment was approved
 - Ensure version in `Cargo.toml` is higher than the published version
 - Check that all required metadata is present in `Cargo.toml`
 
