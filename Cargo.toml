@@ -2,6 +2,13 @@
 name = "ivoryvalley"
 version = "0.1.0"
 edition = "2021"
+description = "A transparent deduplication proxy for Mastodon and the Fediverse"
+license = "MIT"
+repository = "https://github.com/jensens/ivoryvalley"
+homepage = "https://github.com/jensens/ivoryvalley"
+readme = "README.md"
+keywords = ["mastodon", "fediverse", "proxy", "deduplication", "activitypub"]
+categories = ["command-line-utilities", "network-programming", "web-programming"]
 
 [dependencies]
 # Async runtime
