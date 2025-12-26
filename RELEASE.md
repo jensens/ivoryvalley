@@ -81,6 +81,10 @@ Once the release is published, GitHub Actions automatically:
 
 3. **Publishes to crates.io** after all builds complete
 
+4. **Builds and pushes Docker image** to GitHub Container Registry (ghcr.io)
+   - Multi-platform: `linux/amd64` and `linux/arm64`
+   - Tags: version (e.g., `0.1.0`), major.minor (e.g., `0.1`), major (e.g., `0`), and `latest`
+
 ## Release Artifacts
 
 After the workflow completes, the release will contain:
@@ -92,6 +96,7 @@ After the workflow completes, the release will contain:
 | macOS x86_64 | `ivoryvalley-X.Y.Z-x86_64-apple-darwin.tar.gz` |
 | macOS ARM64 | `ivoryvalley-X.Y.Z-aarch64-apple-darwin.tar.gz` |
 | Windows x86_64 | `ivoryvalley-X.Y.Z-x86_64-pc-windows-msvc.zip` |
+| Docker (amd64, arm64) | `ghcr.io/jensens/ivoryvalley:X.Y.Z` |
 
 ## Version Numbering
 
@@ -127,6 +132,12 @@ Common issues:
 - Verify the workflow has `id-token: write` permission
 - If environment protection rules are enabled, ensure the deployment was approved
 
+### Docker Build Failure
+
+- Verify the crates.io publish succeeded first (Docker depends on it)
+- Check that the version tag exists on crates.io
+- ARM64 builds use QEMU emulation and may take longer
+
 ### Manual Publishing
 
 If automated publishing fails, you can publish manually:
@@ -136,35 +147,3 @@ cargo publish
 ```
 
 Note: This requires you to be logged in via `cargo login`.
-
-## Installation from Release
-
-Users can install from various sources:
-
-### From crates.io
-
-```bash
-cargo install ivoryvalley
-```
-
-### From GitHub Releases
-
-Download the appropriate archive for your platform and extract:
-
-```bash
-# Linux/macOS
-tar xzf ivoryvalley-X.Y.Z-<target>.tar.gz
-./ivoryvalley --help
-
-# Windows
-unzip ivoryvalley-X.Y.Z-x86_64-pc-windows-msvc.zip
-ivoryvalley.exe --help
-```
-
-### From Source
-
-```bash
-git clone https://github.com/jensens/ivoryvalley.git
-cd ivoryvalley
-cargo build --release
-```
