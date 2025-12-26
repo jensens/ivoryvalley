@@ -39,10 +39,41 @@ IvoryValley sits between your Mastodon client and the upstream server, filtering
 
 ## Installation
 
+### From Docker (Recommended)
+
+Pull and run the latest image:
+
+```bash
+docker pull ghcr.io/jensens/ivoryvalley:latest
+docker run -d \
+  --name ivoryvalley \
+  -p 8080:8080 \
+  -v ivoryvalley-data:/data \
+  -e IVORYVALLEY_UPSTREAM_URL=https://mastodon.social \
+  ghcr.io/jensens/ivoryvalley:latest
+```
+
+Or use docker-compose (see [docker-compose.yml](docker-compose.yml)):
+
+```bash
+# Edit docker-compose.yml with your upstream URL
+docker compose up -d
+```
+
+### From crates.io
+
+```bash
+cargo install ivoryvalley
+```
+
+### From GitHub Releases
+
+Download the appropriate binary for your platform from the [Releases](https://github.com/jensens/ivoryvalley/releases) page.
+
 ### From Source
 
 ```bash
-git clone https://github.com/your-username/ivoryvalley.git
+git clone https://github.com/jensens/ivoryvalley.git
 cd ivoryvalley
 cargo build --release
 ```
