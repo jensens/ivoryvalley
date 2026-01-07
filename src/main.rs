@@ -1,6 +1,7 @@
 use ivoryvalley::config::Config;
 use ivoryvalley::db::SeenUriStore;
 use ivoryvalley::proxy::create_proxy_router;
+use ivoryvalley::shutdown::shutdown_signal;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -37,5 +38,10 @@ async fn main() {
 
     tracing::info!("Proxy server running on http://{}", config.bind_addr());
 
-    axum::serve(listener, app).await.expect("Server error");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("Server error");
+
+    tracing::info!("Server shutdown complete");
 }
