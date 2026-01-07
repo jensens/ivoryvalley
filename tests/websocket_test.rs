@@ -384,3 +384,88 @@ async fn test_websocket_close_handling() {
         _ => panic!("Expected close frame or stream end, got {:?}", response),
     }
 }
+
+// =============================================================================
+// Legitimate message tests (Issue #20)
+// These tests verify that deduplication doesn't drop valid content.
+// =============================================================================
+
+/// Test that different statuses via WebSocket are NOT deduplicated.
+/// Each status has a unique URI, so both should pass through.
+#[tokio::test]
+async fn test_websocket_different_statuses_not_deduplicated() {
+    let upstream = MockUpstreamWs::start().await;
+
+    // Queue two different update events with unique URIs
+    let status1 = serde_json::json!({
+        "id": "1",
+        "uri": "https://example.com/status/1",
+        "content": "<p>First post</p>"
+    })
+    .to_string();
+    let event1 = serde_json::json!({
+        "event": "update",
+        "payload": status1
+    })
+    .to_string();
+
+    let status2 = serde_json::json!({
+        "id": "2",
+        "uri": "https://example.com/status/2",
+        "content": "<p>Second post</p>"
+    })
+    .to_string();
+    let event2 = serde_json::json!({
+        "event": "update",
+        "payload": status2
+    })
+    .to_string();
+
+    upstream.queue_message(event1).await;
+    upstream.queue_message(event2).await;
+
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    // Start the proxy server
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = listener.local_addr().unwrap();
+    let proxy_url = format!("http://{}", proxy_addr);
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    // Give the server time to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Connect to the proxy
+    let (_sink, mut stream) = connect_to_proxy(&proxy_url).await;
+
+    // Receive the first message (should pass through)
+    let first_msg = tokio::time::timeout(tokio::time::Duration::from_secs(2), stream.next())
+        .await
+        .expect("Timeout waiting for first message")
+        .expect("Stream ended")
+        .expect("Error receiving first message");
+
+    assert!(
+        matches!(first_msg, tungstenite::Message::Text(_)),
+        "Expected text message for first status"
+    );
+
+    // Receive the second message (should also pass through - different URI)
+    let second_msg = tokio::time::timeout(tokio::time::Duration::from_secs(2), stream.next())
+        .await
+        .expect("Timeout waiting for second message")
+        .expect("Stream ended")
+        .expect("Error receiving second message");
+
+    assert!(
+        matches!(second_msg, tungstenite::Message::Text(_)),
+        "Expected text message for second status - both unique statuses should pass through"
+    );
+}

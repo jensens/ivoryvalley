@@ -1,0 +1,32 @@
+# Runtime image using pre-built binaries
+FROM debian:bookworm-slim
+
+# Build argument for target architecture (set by Docker buildx)
+ARG TARGETARCH
+
+# Install ca-certificates for HTTPS connections and create non-root user
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -u 1000 -m ivoryvalley
+
+# Copy the pre-built binary for the target architecture
+COPY binaries/linux/${TARGETARCH}/ivoryvalley /usr/local/bin/ivoryvalley
+
+# Create data directory for SQLite database
+RUN mkdir -p /data && chown ivoryvalley:ivoryvalley /data
+
+# Switch to non-root user
+USER ivoryvalley
+WORKDIR /data
+
+# Default environment variables
+ENV IVORYVALLEY_HOST=0.0.0.0 \
+    IVORYVALLEY_PORT=8080 \
+    IVORYVALLEY_DATABASE_PATH=/data/ivoryvalley.db
+
+# Expose the proxy port
+EXPOSE 8080
+
+# Run the proxy
+ENTRYPOINT ["ivoryvalley"]

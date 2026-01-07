@@ -1,7 +1,14 @@
 [package]
 name = "ivoryvalley"
-version = "0.1.0"
+version = "0.2.2"
 edition = "2021"
+description = "A transparent deduplication proxy for Mastodon and the Fediverse"
+license = "MIT"
+repository = "https://github.com/jensens/ivoryvalley"
+homepage = "https://github.com/jensens/ivoryvalley"
+readme = "README.md"
+keywords = ["mastodon", "fediverse", "proxy", "deduplication", "activitypub"]
+categories = ["command-line-utilities", "network-programming", "web-programming"]
 
 [dependencies]
 # Async runtime
@@ -11,16 +18,19 @@ tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
 
 # HTTP client for upstream requests
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # WebSocket client for upstream streaming
-tokio-tungstenite = "0.26"
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 
 # Stream utilities for WebSocket handling
 futures-util = "0.3"
 
 # URL encoding for query parameters
 urlencoding = "2"
+
+# URL parsing for redirect rewriting
+url = "2"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -49,3 +59,10 @@ axum-test = "17"
 
 # Better test assertions
 pretty_assertions = "1"
+
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
+[[bench]]
+name = "performance"
+harness = false
