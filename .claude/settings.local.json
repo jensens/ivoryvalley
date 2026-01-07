@@ -27,7 +27,10 @@
       "Bash(gh issue edit:*)",
       "Bash(gh label create:*)",
       "Bash(gh label edit:*)",
-      "Bash(git worktree:*)"
+      "Bash(git worktree:*)",
+      "Bash(git stash:*)",
+      "Bash(chmod:*)",
+      "Bash(cargo bench:*)"
     ],
     "deny": [],
     "ask": []
