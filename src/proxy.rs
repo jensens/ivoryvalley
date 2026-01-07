@@ -435,14 +435,26 @@ fn filter_timeline_response(body: &[u8], state: &AppState) -> Vec<u8> {
 /// Build headers to send to upstream, filtering and transforming as needed.
 ///
 /// Rewrites Origin and Referer headers to point to the upstream server
-/// so CSRF protection works correctly.
+/// so CSRF protection works correctly. Sets the Host header to the upstream
+/// hostname (similar to nginx's `proxy_set_header Host $proxy_host`).
 fn build_upstream_headers(client_headers: &HeaderMap, upstream_url: &str) -> HeaderMap {
     let mut upstream_headers = HeaderMap::new();
 
-    // Parse upstream URL to get its origin
-    let upstream_origin = url::Url::parse(upstream_url)
-        .ok()
+    // Parse upstream URL to get its origin and host
+    let upstream_parsed = url::Url::parse(upstream_url).ok();
+    let upstream_origin = upstream_parsed
+        .as_ref()
         .map(|u| format!("{}://{}", u.scheme(), u.host_str().unwrap_or("")));
+
+    // Set the Host header to the upstream hostname
+    // This is critical for upstream servers that check the Host header
+    if let Some(ref parsed) = upstream_parsed {
+        let host_value = build_host_header_value(parsed);
+        if let Ok(header_value) = host_value.parse::<header::HeaderValue>() {
+            upstream_headers.insert(header::HOST, header_value);
+            tracing::debug!("Set Host header to upstream: {}", host_value);
+        }
+    }
 
     for (name, value) in client_headers.iter() {
         let name_lower = name.as_str().to_lowercase();
@@ -492,6 +504,29 @@ fn build_upstream_headers(client_headers: &HeaderMap, upstream_url: &str) -> Hea
     }
 
     upstream_headers
+}
+
+/// Build the Host header value from a parsed URL.
+///
+/// Follows HTTP conventions: omit default ports (80 for http, 443 for https),
+/// include non-default ports.
+fn build_host_header_value(url: &url::Url) -> String {
+    let host = url.host_str().unwrap_or("");
+    let port = url.port();
+
+    // Determine if we should include the port
+    let include_port = match (url.scheme(), port) {
+        ("http", Some(80)) => false,   // Default HTTP port
+        ("https", Some(443)) => false, // Default HTTPS port
+        (_, Some(_)) => true,          // Non-default port
+        (_, None) => false,            // No port specified
+    };
+
+    if include_port {
+        format!("{}:{}", host, port.unwrap())
+    } else {
+        host.to_string()
+    }
 }
 
 /// Errors that can occur during proxying
@@ -553,15 +588,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_upstream_headers_filters_host() {
+    fn test_build_upstream_headers_rewrites_host_to_upstream() {
         let mut client_headers = HeaderMap::new();
         client_headers.insert("host", "proxy.local".parse().unwrap());
         client_headers.insert("authorization", "Bearer token".parse().unwrap());
 
         let upstream = build_upstream_headers(&client_headers, "https://mastodon.social");
 
-        assert!(upstream.get("host").is_none());
+        // Host header should be rewritten to upstream hostname, not stripped
+        assert_eq!(upstream.get("host").unwrap(), "mastodon.social");
         assert!(upstream.get("authorization").is_some());
+    }
+
+    #[test]
+    fn test_build_upstream_headers_sets_host_with_port() {
+        let mut client_headers = HeaderMap::new();
+        client_headers.insert("host", "localhost:8080".parse().unwrap());
+
+        let upstream = build_upstream_headers(&client_headers, "https://example.com:8443");
+
+        // Host header should include port when non-default
+        assert_eq!(upstream.get("host").unwrap(), "example.com:8443");
+    }
+
+    #[test]
+    fn test_build_upstream_headers_sets_host_default_https_port() {
+        let mut client_headers = HeaderMap::new();
+        client_headers.insert("host", "localhost:8080".parse().unwrap());
+
+        let upstream = build_upstream_headers(&client_headers, "https://example.com:443");
+
+        // Default HTTPS port (443) should be omitted
+        assert_eq!(upstream.get("host").unwrap(), "example.com");
+    }
+
+    #[test]
+    fn test_build_upstream_headers_sets_host_default_http_port() {
+        let mut client_headers = HeaderMap::new();
+        client_headers.insert("host", "localhost:8080".parse().unwrap());
+
+        let upstream = build_upstream_headers(&client_headers, "http://example.com:80");
+
+        // Default HTTP port (80) should be omitted
+        assert_eq!(upstream.get("host").unwrap(), "example.com");
     }
 
     #[test]
