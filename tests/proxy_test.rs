@@ -619,3 +619,63 @@ async fn test_timeline_status_without_uri_passes_through() {
     let body: serde_json::Value = response.json();
     assert_eq!(body.as_array().unwrap().len(), 1);
 }
+
+// =============================================================================
+// Health check endpoint tests
+// =============================================================================
+
+/// Test that /health returns 200 OK with status and version.
+#[tokio::test]
+async fn test_health_endpoint_returns_ok() {
+    let upstream = MockUpstream::start().await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+    let response = client.get("/health").await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["status"], "healthy");
+    assert!(body["version"].is_string());
+}
+
+/// Test that /health does not require authentication.
+#[tokio::test]
+async fn test_health_endpoint_no_auth_required() {
+    let upstream = MockUpstream::start().await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+    // No auth header
+    let response = client.get("/health").await;
+
+    response.assert_status_ok();
+}
+
+/// Test that /health?deep=true checks database connectivity.
+#[tokio::test]
+async fn test_health_endpoint_deep_check() {
+    let upstream = MockUpstream::start().await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, seen_store);
+
+    let client = axum_test::TestServer::new(app).unwrap();
+    let response = client.get("/health?deep=true").await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["status"], "healthy");
+    assert!(body["version"].is_string());
+    assert!(body["checks"]["database"].is_string());
+}
