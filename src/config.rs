@@ -2,16 +2,21 @@
 //!
 //! Configuration is loaded with the following priority (highest first):
 //! 1. Command line arguments
-//! 2. Environment variables (prefixed with IVORYVALLEY_)
+//! 2. Environment variables (prefixed with IV_)
 //! 3. Configuration file (config.toml or config.yaml)
 //! 4. Default values
+//!
+//! Note: The IV_ prefix is used instead of IVORYVALLEY_ to avoid collision
+//! with Kubernetes service discovery environment variables. When a service
+//! named "ivoryvalley" is deployed, Kubernetes injects variables like
+//! IVORYVALLEY_PORT=tcp://10.43.62.146:80 which would conflict.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use config::{ConfigError, Environment, File};
+use config::{ConfigError, File};
 use serde::Deserialize;
 
 /// Default upstream URL
@@ -37,39 +42,39 @@ const DEFAULT_RECORD_TRAFFIC_PATH: Option<&str> = None;
 #[command(about = "A Mastodon proxy server for filtering content")]
 pub struct CliArgs {
     /// Upstream Mastodon server URL
-    #[arg(long, env = "IVORYVALLEY_UPSTREAM_URL")]
+    #[arg(long, env = "IV_UPSTREAM_URL")]
     pub upstream_url: Option<String>,
 
     /// Host to bind the proxy server to
-    #[arg(long, env = "IVORYVALLEY_HOST")]
+    #[arg(long, env = "IV_HOST")]
     pub host: Option<String>,
 
     /// Port to bind the proxy server to
-    #[arg(short, long, env = "IVORYVALLEY_PORT")]
+    #[arg(short, long, env = "IV_PORT")]
     pub port: Option<u16>,
 
     /// Path to the SQLite database file
-    #[arg(long, env = "IVORYVALLEY_DATABASE_PATH")]
+    #[arg(long, env = "IV_DATABASE_PATH")]
     pub database_path: Option<PathBuf>,
 
     /// Maximum request body size in bytes (default: 50MB)
-    #[arg(long, env = "IVORYVALLEY_MAX_BODY_SIZE")]
+    #[arg(long, env = "IV_MAX_BODY_SIZE")]
     pub max_body_size: Option<usize>,
 
     /// HTTP client connect timeout in seconds
-    #[arg(long, env = "IVORYVALLEY_CONNECT_TIMEOUT_SECS")]
+    #[arg(long, env = "IV_CONNECT_TIMEOUT_SECS")]
     pub connect_timeout_secs: Option<u64>,
 
     /// HTTP client request timeout in seconds
-    #[arg(long, env = "IVORYVALLEY_REQUEST_TIMEOUT_SECS")]
+    #[arg(long, env = "IV_REQUEST_TIMEOUT_SECS")]
     pub request_timeout_secs: Option<u64>,
 
     /// Path to record traffic (JSONL file). If set, all request/response pairs are recorded.
-    #[arg(long, env = "IVORYVALLEY_RECORD_TRAFFIC_PATH")]
+    #[arg(long, env = "IV_RECORD_TRAFFIC_PATH")]
     pub record_traffic_path: Option<PathBuf>,
 
     /// Path to configuration file
-    #[arg(short, long, env = "IVORYVALLEY_CONFIG")]
+    #[arg(short, long, env = "IV_CONFIG")]
     pub config: Option<PathBuf>,
 }
 
@@ -236,6 +241,10 @@ impl Config {
     }
 
     /// Load configuration from file
+    ///
+    /// Note: Environment variables are handled by clap's `env` attribute on CliArgs,
+    /// not by the config crate. This ensures CLI args (including env vars) always
+    /// take precedence over file config.
     fn load_file_config(config_path: &Option<PathBuf>) -> Result<FileConfig, ConfigError> {
         let mut builder = config::Config::builder();
 
@@ -248,13 +257,6 @@ impl Config {
                 .add_source(File::with_name("config").required(false))
                 .add_source(File::with_name("ivoryvalley").required(false));
         }
-
-        // Add environment variables with IVORYVALLEY_ prefix
-        builder = builder.add_source(
-            Environment::with_prefix("IVORYVALLEY")
-                .separator("_")
-                .try_parsing(true),
-        );
 
         let settings = builder.build()?;
         settings.try_deserialize()
@@ -356,6 +358,11 @@ mod tests {
 
     #[test]
     fn test_load_defaults_when_no_config() {
+        // Use an empty temp config file to isolate from env vars
+        // (without a config file, the config crate would load env vars)
+        let mut file = NamedTempFile::with_suffix(".toml").unwrap();
+        writeln!(file, "# empty config").unwrap();
+
         let args = CliArgs {
             upstream_url: None,
             host: None,
@@ -365,7 +372,7 @@ mod tests {
             connect_timeout_secs: None,
             request_timeout_secs: None,
             record_traffic_path: None,
-            config: None,
+            config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
         assert_eq!(config.upstream_url, "https://mastodon.social");
@@ -544,5 +551,87 @@ upstream_url = "https://partial.example.com"
         assert_eq!(config.connect_timeout_secs, 10); // Default
         assert_eq!(config.request_timeout_secs, 30); // Default
         assert_eq!(config.record_traffic_path, None); // Default
+    }
+
+    // Mutex to serialize env var tests (env vars are process-global)
+    use std::sync::Mutex;
+    static ENV_VAR_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// Helper struct to ensure env var cleanup on drop (even if test panics)
+    /// Also holds the mutex guard to serialize access to env vars.
+    struct EnvVarGuard<'a> {
+        vars: Vec<&'static str>,
+        _lock: std::sync::MutexGuard<'a, ()>,
+    }
+
+    impl<'a> EnvVarGuard<'a> {
+        fn new(vars: &[(&'static str, &str)]) -> Self {
+            // Acquire lock before modifying env vars
+            let lock = ENV_VAR_TEST_MUTEX.lock().unwrap();
+            for (key, value) in vars {
+                std::env::set_var(key, value);
+            }
+            Self {
+                vars: vars.iter().map(|(k, _)| *k).collect(),
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard<'_> {
+        fn drop(&mut self) {
+            for var in &self.vars {
+                std::env::remove_var(var);
+            }
+            // Lock is automatically released when _lock is dropped
+        }
+    }
+
+    #[test]
+    fn test_env_var_prefix_uses_iv() {
+        // This test verifies that environment variables use the IV_ prefix
+        // to avoid collision with Kubernetes service discovery variables
+        // (which would use IVORYVALLEY_ for a service named "ivoryvalley")
+
+        // Set env vars with IV_ prefix (cleanup guaranteed by guard)
+        let _guard = EnvVarGuard::new(&[
+            ("IV_HOST", "192.168.99.1"),
+            ("IV_PORT", "9999"),
+            ("IV_UPSTREAM_URL", "https://env.example.com"),
+        ]);
+
+        // Use clap's try_parse_from to simulate CLI parsing with env vars
+        // (passing empty args so env vars are used as fallback)
+        let args = CliArgs::try_parse_from(["ivoryvalley"]).unwrap();
+
+        assert_eq!(args.host, Some("192.168.99.1".to_string()));
+        assert_eq!(args.port, Some(9999));
+        assert_eq!(
+            args.upstream_url,
+            Some("https://env.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_kubernetes_style_env_vars_ignored() {
+        // This test verifies that Kubernetes-style env vars don't interfere
+        // with configuration loading (simulating IVORYVALLEY_PORT=tcp://...)
+        //
+        // Before the fix, having a Kubernetes service named "ivoryvalley" would
+        // inject IVORYVALLEY_PORT=tcp://... which would collide with the config
+        // env vars and cause a parse error.
+
+        // Set Kubernetes-style env vars (cleanup guaranteed by guard)
+        let _guard = EnvVarGuard::new(&[
+            ("IVORYVALLEY_PORT", "tcp://10.43.62.146:80"),
+            ("IVORYVALLEY_PORT_80_TCP", "tcp://10.43.62.146:80"),
+        ]);
+
+        // Use clap's try_parse_from to simulate CLI parsing
+        // This should succeed without errors, ignoring the IVORYVALLEY_* vars
+        let args = CliArgs::try_parse_from(["ivoryvalley"]).unwrap();
+
+        // Port should be None (using default), not causing a parse error
+        assert_eq!(args.port, None);
     }
 }
