@@ -97,7 +97,7 @@ ivoryvalley --upstream-url https://mastodon.social
 
 ### 2. Configure Your Client
 
-Point your Mastodon client to `http://localhost:8080` instead of your instance URL. See [Client Setup](#client-setup) for detailed instructions.
+Point your Mastodon client to your IvoryValley URL instead of your instance URL. Most clients require HTTPS - see [Client Setup](#client-setup) for detailed instructions and [Local HTTPS Setup](#local-https-setup) for development options.
 
 ### 3. Log In Normally
 
@@ -179,30 +179,32 @@ IvoryValley works with any Mastodon-compatible client. You simply change the ser
 
 ### Important Notes
 
-- **HTTP vs HTTPS**: Most mobile clients require HTTPS for OAuth. If you're running IvoryValley locally, you'll need to use the HTTPS development proxy (see below) or set up a reverse proxy with a valid certificate.
+- **HTTP vs HTTPS**: Most Mastodon clients (both desktop and mobile) require HTTPS for OAuth authentication. See [Local HTTPS Setup](#local-https-setup) for development options.
 - **Authentication**: Your login credentials and OAuth tokens are passed through to the upstream server. IvoryValley does not store or access them.
 - **Same Instance**: Make sure to configure IvoryValley with the same upstream URL as your Mastodon account.
 
 ### Desktop Clients
 
+> **Note**: Despite being desktop applications, many Mastodon clients require HTTPS even for localhost connections due to OAuth security requirements and embedded browser security policies. See [Local HTTPS Setup](#local-https-setup) for workarounds.
+
 #### Tuba (Linux GTK)
 
 1. Install: `flatpak install flathub dev.geopjr.Tuba`
 2. Open Tuba and click "Add Account"
-3. Enter `http://localhost:8080` (or `https://localhost:8443` for HTTPS) as the instance
+3. Enter your IvoryValley HTTPS URL (e.g., `https://localhost:8443` or your mkcert domain)
 4. Log in with your normal Mastodon credentials
 
 #### Tokodon (Linux KDE)
 
 1. Install: `apt install tokodon` or via your package manager
 2. Open Tokodon and add a new account
-3. Enter `http://localhost:8080` as the server URL
+3. Enter your IvoryValley HTTPS URL as the server
 4. Complete the OAuth flow normally
 
 #### Whalebird (Cross-platform)
 
 1. Download from [Whalebird releases](https://github.com/h3poteto/whalebird-desktop/releases)
-2. Add new account and enter `http://localhost:8080` as the instance
+2. Add new account and enter your IvoryValley HTTPS URL as the instance
 3. Log in with your credentials
 
 ### Mobile Clients
@@ -243,6 +245,67 @@ xdg-open http://localhost:8080
 ```
 
 Note that the web interface works best with HTTPS for all features.
+
+### Local HTTPS Setup
+
+For local development and testing with desktop/mobile clients, you'll need HTTPS with trusted certificates. Here are recommended approaches:
+
+#### Option 1: mkcert (Recommended for Development)
+
+[mkcert](https://github.com/FiloSottile/mkcert) creates locally-trusted development certificates.
+
+```bash
+# Install mkcert
+# macOS
+brew install mkcert
+
+# Linux (check your package manager, or use the binary release)
+# See https://github.com/FiloSottile/mkcert#installation
+
+# Create and install the local CA
+mkcert -install
+
+# Generate certificates for localhost
+mkcert localhost 127.0.0.1 ::1
+
+# This creates localhost+2.pem and localhost+2-key.pem
+```
+
+Then use a reverse proxy like Caddy to serve IvoryValley over HTTPS:
+
+```bash
+# Caddyfile
+localhost:8443 {
+    tls localhost+2.pem localhost+2-key.pem
+    reverse_proxy localhost:8080
+}
+```
+
+#### Option 2: Caddy with Automatic HTTPS
+
+[Caddy](https://caddyserver.com/) can automatically provision certificates. For local development with a custom domain:
+
+1. Add an entry to `/etc/hosts`: `127.0.0.1 ivoryvalley.local`
+2. Use Caddy with mkcert certificates:
+
+```bash
+# Caddyfile
+ivoryvalley.local {
+    tls internal
+    reverse_proxy localhost:8080
+}
+```
+
+#### Option 3: Deploy with a Real Domain
+
+For the most seamless experience, deploy IvoryValley on a server with a real domain name. Caddy will automatically obtain Let's Encrypt certificates:
+
+```bash
+# Caddyfile
+ivoryvalley.example.com {
+    reverse_proxy localhost:8080
+}
+```
 
 ## Troubleshooting
 
