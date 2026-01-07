@@ -155,7 +155,7 @@ async fn test_websocket_upgrade_succeeds() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     // Start the proxy server
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -192,7 +192,7 @@ async fn test_bidirectional_message_relay() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     // Start the proxy server
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -242,7 +242,7 @@ async fn test_upstream_to_client_relay() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     // Start the proxy server
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -301,7 +301,7 @@ async fn test_websocket_deduplication() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     // Start the proxy server
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -349,7 +349,7 @@ async fn test_websocket_close_handling() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     // Start the proxy server
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -428,7 +428,7 @@ async fn test_websocket_different_statuses_not_deduplicated() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     // Start the proxy server
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

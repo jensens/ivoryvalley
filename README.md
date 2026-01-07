@@ -36,6 +36,7 @@ IvoryValley sits between your Mastodon client and the upstream server, filtering
 - **OAuth passthrough** - No credential handling, tokens are forwarded directly
 - **SQLite storage** - Lightweight local database for tracking seen URIs
 - **Configurable** - CLI args, environment variables, or config file
+- **Health endpoint** - `/health` endpoint for load balancers and Kubernetes probes
 
 ## Installation
 
@@ -161,6 +162,39 @@ host: "127.0.0.1"
 port: 8080
 database_path: "/var/lib/ivoryvalley/seen.db"
 ```
+
+## Health Check Endpoint
+
+The proxy exposes a `/health` endpoint for monitoring and orchestration systems.
+
+### Basic Health Check
+
+```bash
+curl http://localhost:8080/health
+```
+
+Response:
+```json
+{"status": "healthy", "version": "0.1.0"}
+```
+
+### Deep Health Check
+
+Use the `?deep=true` query parameter to include database connectivity verification:
+
+```bash
+curl http://localhost:8080/health?deep=true
+```
+
+Response:
+```json
+{"status": "healthy", "version": "0.1.0", "checks": {"database": "ok"}}
+```
+
+This endpoint:
+- Returns HTTP 200 when the service is healthy
+- Does not require authentication
+- Suitable for load balancer health checks and Kubernetes liveness/readiness probes
 
 ## How It Works
 
