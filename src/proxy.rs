@@ -175,9 +175,9 @@ fn is_timeline_endpoint(path: &str) -> bool {
 }
 
 /// Create the proxy router with all routes
-pub fn create_proxy_router(config: Config, seen_store: SeenUriStore) -> Router {
-    // Wrap the store in Arc to share between HTTP proxy and WebSocket handlers
-    let seen_store = Arc::new(seen_store);
+pub fn create_proxy_router(config: Config, seen_store: Arc<SeenUriStore>) -> Router {
+    // The store is already wrapped in Arc for sharing between HTTP proxy,
+    // WebSocket handlers, and the background cleanup task
 
     let app_state = AppState::new(config, seen_store.clone());
     let ws_state = WebSocketState::new(app_state.clone(), seen_store);

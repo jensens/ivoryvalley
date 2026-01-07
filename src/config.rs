@@ -35,6 +35,10 @@ const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
 /// Default recording path (None = disabled)
 const DEFAULT_RECORD_TRAFFIC_PATH: Option<&str> = None;
+/// Default cleanup interval in seconds (1 hour)
+const DEFAULT_CLEANUP_INTERVAL_SECS: u64 = 3600;
+/// Default cleanup max age in seconds (7 days)
+const DEFAULT_CLEANUP_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
 
 /// Command line arguments
 #[derive(Parser, Debug)]
@@ -73,6 +77,14 @@ pub struct CliArgs {
     #[arg(long, env = "IV_RECORD_TRAFFIC_PATH")]
     pub record_traffic_path: Option<PathBuf>,
 
+    /// Interval between cleanup runs in seconds (default: 3600 = 1 hour)
+    #[arg(long, env = "IV_CLEANUP_INTERVAL_SECS")]
+    pub cleanup_interval_secs: Option<u64>,
+
+    /// Maximum age of stored URIs in seconds (default: 604800 = 7 days)
+    #[arg(long, env = "IV_CLEANUP_MAX_AGE_SECS")]
+    pub cleanup_max_age_secs: Option<u64>,
+
     /// Path to configuration file
     #[arg(short, long, env = "IV_CONFIG")]
     pub config: Option<PathBuf>,
@@ -90,6 +102,8 @@ struct FileConfig {
     connect_timeout_secs: Option<u64>,
     request_timeout_secs: Option<u64>,
     record_traffic_path: Option<PathBuf>,
+    cleanup_interval_secs: Option<u64>,
+    cleanup_max_age_secs: Option<u64>,
 }
 
 /// Configuration for the IvoryValley proxy server
@@ -118,6 +132,12 @@ pub struct Config {
 
     /// Path to record traffic (JSONL file). If Some, all traffic is recorded.
     pub record_traffic_path: Option<PathBuf>,
+
+    /// Interval between cleanup runs in seconds
+    pub cleanup_interval_secs: u64,
+
+    /// Maximum age of stored URIs in seconds (older entries are removed during cleanup)
+    pub cleanup_max_age_secs: u64,
 }
 
 impl Default for Config {
@@ -131,6 +151,8 @@ impl Default for Config {
             connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
             request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
             record_traffic_path: DEFAULT_RECORD_TRAFFIC_PATH.map(PathBuf::from),
+            cleanup_interval_secs: DEFAULT_CLEANUP_INTERVAL_SECS,
+            cleanup_max_age_secs: DEFAULT_CLEANUP_MAX_AGE_SECS,
         }
     }
 }
@@ -148,6 +170,8 @@ impl Config {
             connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
             request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
             record_traffic_path: None,
+            cleanup_interval_secs: DEFAULT_CLEANUP_INTERVAL_SECS,
+            cleanup_max_age_secs: DEFAULT_CLEANUP_MAX_AGE_SECS,
         }
     }
 
@@ -169,6 +193,8 @@ impl Config {
             connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
             request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
             record_traffic_path: None,
+            cleanup_interval_secs: DEFAULT_CLEANUP_INTERVAL_SECS,
+            cleanup_max_age_secs: DEFAULT_CLEANUP_MAX_AGE_SECS,
         }
     }
 
@@ -210,6 +236,12 @@ impl Config {
         if let Some(path) = file_config.record_traffic_path {
             config.record_traffic_path = Some(path);
         }
+        if let Some(interval) = file_config.cleanup_interval_secs {
+            config.cleanup_interval_secs = interval;
+        }
+        if let Some(max_age) = file_config.cleanup_max_age_secs {
+            config.cleanup_max_age_secs = max_age;
+        }
 
         // Apply CLI args (CLI overrides everything)
         if let Some(url) = args.upstream_url {
@@ -235,6 +267,12 @@ impl Config {
         }
         if let Some(path) = args.record_traffic_path {
             config.record_traffic_path = Some(path);
+        }
+        if let Some(interval) = args.cleanup_interval_secs {
+            config.cleanup_interval_secs = interval;
+        }
+        if let Some(max_age) = args.cleanup_max_age_secs {
+            config.cleanup_max_age_secs = max_age;
         }
 
         Ok(config)
@@ -329,6 +367,8 @@ mod tests {
         assert_eq!(config.max_body_size, 50 * 1024 * 1024);
         assert_eq!(config.connect_timeout_secs, 10);
         assert_eq!(config.request_timeout_secs, 30);
+        assert_eq!(config.cleanup_interval_secs, 3600);
+        assert_eq!(config.cleanup_max_age_secs, 7 * 24 * 3600);
     }
 
     #[test]
@@ -372,6 +412,8 @@ mod tests {
             connect_timeout_secs: None,
             request_timeout_secs: None,
             record_traffic_path: None,
+            cleanup_interval_secs: None,
+            cleanup_max_age_secs: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -383,6 +425,8 @@ mod tests {
         assert_eq!(config.connect_timeout_secs, 10);
         assert_eq!(config.request_timeout_secs, 30);
         assert_eq!(config.record_traffic_path, None);
+        assert_eq!(config.cleanup_interval_secs, 3600);
+        assert_eq!(config.cleanup_max_age_secs, 7 * 24 * 3600);
     }
 
     #[test]
@@ -396,6 +440,8 @@ mod tests {
             connect_timeout_secs: Some(5),
             request_timeout_secs: Some(60),
             record_traffic_path: Some(PathBuf::from("/tmp/traffic.jsonl")),
+            cleanup_interval_secs: Some(1800),
+            cleanup_max_age_secs: Some(86400),
             config: None,
         };
         let config = Config::load_from_args(args).unwrap();
@@ -410,6 +456,8 @@ mod tests {
             config.record_traffic_path,
             Some(PathBuf::from("/tmp/traffic.jsonl"))
         );
+        assert_eq!(config.cleanup_interval_secs, 1800);
+        assert_eq!(config.cleanup_max_age_secs, 86400);
     }
 
     #[test]
@@ -437,6 +485,8 @@ request_timeout_secs = 45
             connect_timeout_secs: None,
             request_timeout_secs: None,
             record_traffic_path: None,
+            cleanup_interval_secs: None,
+            cleanup_max_age_secs: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -473,6 +523,8 @@ request_timeout_secs: 120
             connect_timeout_secs: None,
             request_timeout_secs: None,
             record_traffic_path: None,
+            cleanup_interval_secs: None,
+            cleanup_max_age_secs: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -509,6 +561,8 @@ request_timeout_secs = 45
             connect_timeout_secs: Some(5), // Override file value
             request_timeout_secs: None,    // Use file value
             record_traffic_path: None,
+            cleanup_interval_secs: None,
+            cleanup_max_age_secs: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -540,6 +594,8 @@ upstream_url = "https://partial.example.com"
             connect_timeout_secs: None,
             request_timeout_secs: None,
             record_traffic_path: None,
+            cleanup_interval_secs: None,
+            cleanup_max_age_secs: None,
             config: Some(file.path().to_path_buf()),
         };
         let config = Config::load_from_args(args).unwrap();
@@ -551,6 +607,8 @@ upstream_url = "https://partial.example.com"
         assert_eq!(config.connect_timeout_secs, 10); // Default
         assert_eq!(config.request_timeout_secs, 30); // Default
         assert_eq!(config.record_traffic_path, None); // Default
+        assert_eq!(config.cleanup_interval_secs, 3600); // Default
+        assert_eq!(config.cleanup_max_age_secs, 7 * 24 * 3600); // Default
     }
 
     // Mutex to serialize env var tests (env vars are process-global)

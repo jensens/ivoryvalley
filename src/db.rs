@@ -262,4 +262,63 @@ mod tests {
         let uri = extract_dedup_uri(&status);
         assert_eq!(uri, None);
     }
+
+    #[test]
+    fn test_cleanup_removes_all_when_zero_age() {
+        let store = SeenUriStore::open(":memory:").unwrap();
+
+        // Add some URIs
+        store.mark_seen("https://example.com/1").unwrap();
+        store.mark_seen("https://example.com/2").unwrap();
+        store.mark_seen("https://example.com/3").unwrap();
+
+        // Verify they're in the store
+        assert!(store.is_seen("https://example.com/1").unwrap());
+        assert!(store.is_seen("https://example.com/2").unwrap());
+        assert!(store.is_seen("https://example.com/3").unwrap());
+
+        // Cleanup with 0 age removes all
+        let removed = store.cleanup(0).unwrap();
+        assert_eq!(removed, 3);
+
+        // Verify all are gone
+        assert!(!store.is_seen("https://example.com/1").unwrap());
+        assert!(!store.is_seen("https://example.com/2").unwrap());
+        assert!(!store.is_seen("https://example.com/3").unwrap());
+    }
+
+    #[test]
+    fn test_cleanup_removes_old_entries() {
+        let store = SeenUriStore::open(":memory:").unwrap();
+
+        // Add a URI
+        store.mark_seen("https://example.com/recent").unwrap();
+
+        // Cleanup with very large max age (keeps all recent entries)
+        let removed = store.cleanup(999999).unwrap();
+        assert_eq!(removed, 0);
+
+        // The entry should still be there
+        assert!(store.is_seen("https://example.com/recent").unwrap());
+    }
+
+    #[test]
+    fn test_cleanup_returns_count() {
+        let store = SeenUriStore::open(":memory:").unwrap();
+
+        // Empty store should return 0
+        let removed = store.cleanup(0).unwrap();
+        assert_eq!(removed, 0);
+
+        // Add entries and clean them up
+        store.mark_seen("https://example.com/a").unwrap();
+        store.mark_seen("https://example.com/b").unwrap();
+
+        let removed = store.cleanup(0).unwrap();
+        assert_eq!(removed, 2);
+
+        // Should be 0 now that all are cleaned
+        let removed = store.cleanup(0).unwrap();
+        assert_eq!(removed, 0);
+    }
 }
