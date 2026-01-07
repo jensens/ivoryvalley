@@ -193,7 +193,7 @@ async fn test_replay_timeline_deduplication() {
         db_path.clone(),
     );
     let seen_store = SeenUriStore::open(&db_path).unwrap();
-    let proxy_router = create_proxy_router(config, seen_store);
+    let proxy_router = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     // Create a test server
     let test_server = axum_test::TestServer::new(proxy_router).unwrap();
@@ -302,7 +302,7 @@ async fn test_real_traffic_deduplication() {
         db_path.clone(),
     );
     let seen_store = SeenUriStore::open(&db_path).unwrap();
-    let proxy_router = create_proxy_router(config, seen_store);
+    let proxy_router = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let test_server = axum_test::TestServer::new(proxy_router).unwrap();
 

@@ -651,7 +651,7 @@ async fn test_app_launch_sequence() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -703,7 +703,7 @@ async fn test_timeline_refresh_with_min_id() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -745,7 +745,7 @@ async fn test_timeline_load_more_with_max_id() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -787,7 +787,7 @@ async fn test_timeline_gap_fill_with_since_id() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -815,7 +815,7 @@ async fn test_timeline_link_header_preserved() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -845,7 +845,7 @@ async fn test_post_status() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -873,7 +873,7 @@ async fn test_favourite_status() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -895,7 +895,7 @@ async fn test_reblog_status() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -918,7 +918,7 @@ async fn test_view_thread_context() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -946,7 +946,7 @@ async fn test_deduplication_across_timeline_fetches() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -983,7 +983,7 @@ async fn test_public_timeline() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -1002,7 +1002,7 @@ async fn test_hashtag_timeline() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -1020,7 +1020,7 @@ async fn test_list_timeline() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -1042,7 +1042,7 @@ async fn test_instance_v2_for_streaming_discovery() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -1066,7 +1066,7 @@ async fn test_unauthorized_returns_401() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
@@ -1091,7 +1091,7 @@ async fn test_invalid_token_returns_401() {
     let db_path = temp_dir.path().join("test.db");
     let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
     let seen_store = SeenUriStore::open(":memory:").unwrap();
-    let app = create_proxy_router(config, seen_store);
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
 
     let client = axum_test::TestServer::new(app).unwrap();
 
