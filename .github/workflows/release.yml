@@ -104,6 +104,15 @@ jobs:
           files: |
             ivoryvalley-${{ steps.version.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
 
+      # Upload Linux binaries as artifacts for Docker build
+      - name: Upload binary artifact (Linux only)
+        if: contains(matrix.target, 'linux')
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/ivoryvalley
+          retention-days: 1
+
   # Publish to crates.io using Trusted Publishing (OIDC)
   publish-crates:
     name: Publish to crates.io
@@ -123,19 +132,32 @@ jobs:
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: Publish to crates.io
-        run: cargo publish --token ${{ steps.crates-io-auth.outputs.token }}
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
 
   # Build and push Docker image to GitHub Container Registry
   docker:
     name: Build Docker image
-    needs: publish-crates
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+      - name: Download Linux amd64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-x86_64-unknown-linux-gnu
+          path: binaries/linux/amd64
+
+      - name: Download Linux arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-aarch64-unknown-linux-gnu
+          path: binaries/linux/arm64
+
+      - name: Make binaries executable
+        run: chmod +x binaries/linux/*/ivoryvalley
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -165,11 +187,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
