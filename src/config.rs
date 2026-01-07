@@ -692,4 +692,86 @@ upstream_url = "https://partial.example.com"
         // Port should be None (using default), not causing a parse error
         assert_eq!(args.port, None);
     }
+
+    // Mutex to serialize env var tests (env vars are process-global)
+    use std::sync::Mutex;
+    static ENV_VAR_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// Helper struct to ensure env var cleanup on drop (even if test panics)
+    /// Also holds the mutex guard to serialize access to env vars.
+    struct EnvVarGuard<'a> {
+        vars: Vec<&'static str>,
+        _lock: std::sync::MutexGuard<'a, ()>,
+    }
+
+    impl<'a> EnvVarGuard<'a> {
+        fn new(vars: &[(&'static str, &str)]) -> Self {
+            // Acquire lock before modifying env vars
+            let lock = ENV_VAR_TEST_MUTEX.lock().unwrap();
+            for (key, value) in vars {
+                std::env::set_var(key, value);
+            }
+            Self {
+                vars: vars.iter().map(|(k, _)| *k).collect(),
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard<'_> {
+        fn drop(&mut self) {
+            for var in &self.vars {
+                std::env::remove_var(var);
+            }
+            // Lock is automatically released when _lock is dropped
+        }
+    }
+
+    #[test]
+    fn test_env_var_prefix_uses_iv() {
+        // This test verifies that environment variables use the IV_ prefix
+        // to avoid collision with Kubernetes service discovery variables
+        // (which would use IVORYVALLEY_ for a service named "ivoryvalley")
+
+        // Set env vars with IV_ prefix (cleanup guaranteed by guard)
+        let _guard = EnvVarGuard::new(&[
+            ("IV_HOST", "192.168.99.1"),
+            ("IV_PORT", "9999"),
+            ("IV_UPSTREAM_URL", "https://env.example.com"),
+        ]);
+
+        // Use clap's try_parse_from to simulate CLI parsing with env vars
+        // (passing empty args so env vars are used as fallback)
+        let args = CliArgs::try_parse_from(["ivoryvalley"]).unwrap();
+
+        assert_eq!(args.host, Some("192.168.99.1".to_string()));
+        assert_eq!(args.port, Some(9999));
+        assert_eq!(
+            args.upstream_url,
+            Some("https://env.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_kubernetes_style_env_vars_ignored() {
+        // This test verifies that Kubernetes-style env vars don't interfere
+        // with configuration loading (simulating IVORYVALLEY_PORT=tcp://...)
+        //
+        // Before the fix, having a Kubernetes service named "ivoryvalley" would
+        // inject IVORYVALLEY_PORT=tcp://... which would collide with the config
+        // env vars and cause a parse error.
+
+        // Set Kubernetes-style env vars (cleanup guaranteed by guard)
+        let _guard = EnvVarGuard::new(&[
+            ("IVORYVALLEY_PORT", "tcp://10.43.62.146:80"),
+            ("IVORYVALLEY_PORT_80_TCP", "tcp://10.43.62.146:80"),
+        ]);
+
+        // Use clap's try_parse_from to simulate CLI parsing
+        // This should succeed without errors, ignoring the IVORYVALLEY_* vars
+        let args = CliArgs::try_parse_from(["ivoryvalley"]).unwrap();
+
+        // Port should be None (using default), not causing a parse error
+        assert_eq!(args.port, None);
+    }
 }
