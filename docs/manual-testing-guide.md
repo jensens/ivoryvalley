@@ -21,8 +21,8 @@ cargo build --release
     --port 8080
 
 # Or using environment variables
-IVORYVALLEY_UPSTREAM_URL=https://mastodon.social \
-IVORYVALLEY_PORT=8080 \
+IV_UPSTREAM_URL=https://mastodon.social \
+IV_PORT=8080 \
 cargo run --release
 ```
 

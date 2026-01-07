@@ -50,7 +50,7 @@ docker run -d \
   --name ivoryvalley \
   -p 8080:8080 \
   -v ivoryvalley-data:/data \
-  -e IVORYVALLEY_UPSTREAM_URL=https://mastodon.social \
+  -e IV_UPSTREAM_URL=https://mastodon.social \
   ghcr.io/jensens/ivoryvalley:latest
 ```
 
@@ -89,7 +89,7 @@ The binary will be at `target/release/ivoryvalley`.
 # Using Docker (recommended)
 docker run -d -p 8080:8080 \
   -v ivoryvalley-data:/data \
-  -e IVORYVALLEY_UPSTREAM_URL=https://mastodon.social \
+  -e IV_UPSTREAM_URL=https://mastodon.social \
   ghcr.io/jensens/ivoryvalley:latest
 
 # Or using the binary directly
@@ -114,7 +114,7 @@ ivoryvalley --upstream-url https://mastodon.social
 ivoryvalley --upstream-url https://mastodon.social --host 127.0.0.1 --port 3000
 
 # With environment variables
-IVORYVALLEY_UPSTREAM_URL=https://mastodon.social ivoryvalley
+IV_UPSTREAM_URL=https://mastodon.social ivoryvalley
 
 # With a config file
 ivoryvalley --config /path/to/ivoryvalley.toml
@@ -125,7 +125,7 @@ ivoryvalley --config /path/to/ivoryvalley.toml
 IvoryValley supports configuration via:
 
 1. **CLI arguments** (highest priority)
-2. **Environment variables** (prefixed with `IVORYVALLEY_`)
+2. **Environment variables** (prefixed with `IV_`)
 3. **Config file** (`config.toml`, `config.yaml`, `ivoryvalley.toml`, or `ivoryvalley.yaml`)
 4. **Default values**
 
@@ -133,15 +133,15 @@ IvoryValley supports configuration via:
 
 | Option | Env Variable | Default | Description |
 |--------|--------------|---------|-------------|
-| `--upstream-url` | `IVORYVALLEY_UPSTREAM_URL` | `https://mastodon.social` | Upstream Mastodon instance URL |
-| `--host` | `IVORYVALLEY_HOST` | `0.0.0.0` | Address to bind to |
-| `-p, --port` | `IVORYVALLEY_PORT` | `8080` | Port to listen on |
-| `--database-path` | `IVORYVALLEY_DATABASE_PATH` | `ivoryvalley.db` | SQLite database path |
-| `--max-body-size` | `IVORYVALLEY_MAX_BODY_SIZE` | `52428800` (50MB) | Maximum request body size in bytes |
-| `--connect-timeout-secs` | `IVORYVALLEY_CONNECT_TIMEOUT_SECS` | `10` | HTTP connection timeout in seconds |
-| `--request-timeout-secs` | `IVORYVALLEY_REQUEST_TIMEOUT_SECS` | `30` | HTTP request timeout in seconds |
-| `--record-traffic-path` | `IVORYVALLEY_RECORD_TRAFFIC_PATH` | - | Path to record traffic (JSONL format) |
-| `-c, --config` | `IVORYVALLEY_CONFIG` | - | Path to configuration file |
+| `--upstream-url` | `IV_UPSTREAM_URL` | `https://mastodon.social` | Upstream Mastodon instance URL |
+| `--host` | `IV_HOST` | `0.0.0.0` | Address to bind to |
+| `-p, --port` | `IV_PORT` | `8080` | Port to listen on |
+| `--database-path` | `IV_DATABASE_PATH` | `ivoryvalley.db` | SQLite database path |
+| `--max-body-size` | `IV_MAX_BODY_SIZE` | `52428800` (50MB) | Maximum request body size in bytes |
+| `--connect-timeout-secs` | `IV_CONNECT_TIMEOUT_SECS` | `10` | HTTP connection timeout in seconds |
+| `--request-timeout-secs` | `IV_REQUEST_TIMEOUT_SECS` | `30` | HTTP request timeout in seconds |
+| `--record-traffic-path` | `IV_RECORD_TRAFFIC_PATH` | - | Path to record traffic (JSONL format) |
+| `-c, --config` | `IV_CONFIG` | - | Path to configuration file |
 
 ### Config File Example
 
@@ -398,7 +398,7 @@ rm ivoryvalley.db
 **Container won't start**
 
 - Check logs: `docker logs ivoryvalley`
-- Ensure the `IVORYVALLEY_UPSTREAM_URL` environment variable is set
+- Ensure the `IV_UPSTREAM_URL` environment variable is set
 
 **Database not persisting**
 
@@ -415,7 +415,7 @@ RUST_LOG=ivoryvalley=debug ivoryvalley --upstream-url https://mastodon.social
 
 # With Docker
 docker run -e RUST_LOG=ivoryvalley=debug \
-  -e IVORYVALLEY_UPSTREAM_URL=https://mastodon.social \
+  -e IV_UPSTREAM_URL=https://mastodon.social \
   ghcr.io/jensens/ivoryvalley:latest
 ```
 
