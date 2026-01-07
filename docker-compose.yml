@@ -1,0 +1,21 @@
+services:
+  ivoryvalley:
+    image: ghcr.io/jensens/ivoryvalley:latest
+    container_name: ivoryvalley
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persist SQLite database
+      - ivoryvalley-data:/data
+    environment:
+      # Required: Upstream Mastodon server URL
+      IVORYVALLEY_UPSTREAM_URL: https://mastodon.social
+      # Optional: Adjust these as needed
+      # IVORYVALLEY_PORT: 8080
+      # IVORYVALLEY_MAX_BODY_SIZE: 52428800
+      # IVORYVALLEY_CONNECT_TIMEOUT_SECS: 10
+      # IVORYVALLEY_REQUEST_TIMEOUT_SECS: 30
+
+volumes:
+  ivoryvalley-data:

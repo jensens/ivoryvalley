@@ -12,10 +12,31 @@
       "Bash(cargo clippy:*)",
       "Bash(cd:*)",
       "Bash(cargo fmt:*)",
-      "Bash(gh run view:*)"
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr view:*)",
+      "Bash(git fetch:*)",
+      "Bash(git merge:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo check:*)",
+      "Bash(gh api:*)",
+      "Bash(grep:*)",
+      "Bash(git rebase:*)",
+      "Bash(cargo audit:*)",
+      "Bash(gh issue edit:*)",
+      "Bash(gh label create:*)",
+      "Bash(gh label edit:*)",
+      "Bash(git worktree:*)",
+      "Bash(git stash:*)",
+      "Bash(chmod:*)",
+      "Bash(cargo bench:*)"
     ],
     "deny": [],
     "ask": []
   },
-  "enableAllProjectMcpServers": true
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "tributary"
+  ]
 }

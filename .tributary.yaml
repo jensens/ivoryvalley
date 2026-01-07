@@ -9,10 +9,76 @@ platforms:
 repositories:
 - platform: github
   repo: jensens/ivoryvalley
-active_repo: jensens/ivoryvalley
 workflow:
   labels:
     ready: status/agent-ready
     in_progress: status/in-progress
     blocked: status/blocked
     epic: type/epic
+project:
+  commands:
+    test: cargo test
+    lint: cargo clippy
+    format: cargo fmt
+    build: cargo build
+lsp:
+  enabled: true
+  servers:
+    python:
+      command: ty
+      args:
+      - server
+      extensions:
+      - .py
+      - .pyi
+    typescript:
+      command: vtsls
+      args:
+      - --stdio
+      extensions:
+      - .ts
+      - .tsx
+      - .mts
+      - .cts
+    javascript:
+      command: vtsls
+      args:
+      - --stdio
+      extensions:
+      - .js
+      - .jsx
+      - .mjs
+      - .cjs
+    rust:
+      command: rust-analyzer
+      args: []
+      extensions:
+      - .rs
+    go:
+      command: gopls
+      args: []
+      extensions:
+      - .go
+    json:
+      command: vscode-json-language-server
+      args:
+      - --stdio
+      extensions:
+      - .json
+      - .jsonc
+    html:
+      command: vscode-html-language-server
+      args:
+      - --stdio
+      extensions:
+      - .html
+      - .htm
+    css:
+      command: vscode-css-language-server
+      args:
+      - --stdio
+      extensions:
+      - .css
+      - .scss
+      - .sass
+      - .less

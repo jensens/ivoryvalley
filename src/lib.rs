@@ -3,6 +3,7 @@
 pub mod config;
 pub mod db;
 pub mod proxy;
+pub mod recording;
 pub mod websocket;
 
 // Re-export main deduplication API

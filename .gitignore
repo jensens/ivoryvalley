@@ -1,5 +1,23 @@
 .worktrees/
 .mcp.json
+.tributary.yaml
+.claude/settings.local.json
 
 # Rust
 /target
+
+# SQLite databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Generated certificates
+scripts/.certs/
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
