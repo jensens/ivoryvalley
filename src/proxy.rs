@@ -5,12 +5,13 @@
 
 use axum::{
     body::Body,
-    extract::{Request, State},
+    extract::{Query, Request, State},
     http::{header, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
-    Router,
+    Json, Router,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::config::{AppState, Config};
 use crate::db::{extract_dedup_uri, SeenUriStore};
@@ -32,6 +33,61 @@ const TIMELINE_ENDPOINTS: &[&str] = &[
     "/api/v1/timelines/link",
     "/api/v1/trends/statuses",
 ];
+
+/// Query parameters for the health endpoint
+#[derive(Debug, Deserialize)]
+pub struct HealthQuery {
+    /// If true, perform deep health checks (database, etc.)
+    #[serde(default)]
+    pub deep: bool,
+}
+
+/// Health check response
+#[derive(Debug, Serialize)]
+pub struct HealthResponse {
+    /// Overall health status
+    pub status: &'static str,
+    /// Application version
+    pub version: &'static str,
+    /// Optional detailed checks (only present for deep health checks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checks: Option<HealthChecks>,
+}
+
+/// Detailed health check results
+#[derive(Debug, Serialize)]
+pub struct HealthChecks {
+    /// Database connectivity status
+    pub database: &'static str,
+}
+
+/// Health check endpoint handler
+///
+/// Returns 200 OK with health status and version information.
+/// Use `?deep=true` to include database connectivity check.
+async fn health_handler(
+    State(state): State<AppState>,
+    Query(query): Query<HealthQuery>,
+) -> Json<HealthResponse> {
+    let checks = if query.deep {
+        // Perform deep health check by verifying database connectivity
+        let db_status = match state.seen_uri_store.is_seen("__health_check__") {
+            Ok(_) => "ok",
+            Err(_) => "error",
+        };
+        Some(HealthChecks {
+            database: db_status,
+        })
+    } else {
+        None
+    };
+
+    Json(HealthResponse {
+        status: "healthy",
+        version: env!("CARGO_PKG_VERSION"),
+        checks,
+    })
+}
 
 /// Extract the proxy's base URL from the incoming request for redirect rewriting.
 ///
@@ -127,11 +183,13 @@ pub fn create_proxy_router(config: Config, seen_store: SeenUriStore) -> Router {
     let ws_state = WebSocketState::new(app_state.clone(), seen_store);
 
     // The streaming route uses WebSocketState (with SeenUriStore for deduplication).
+    // The health route uses AppState for optional deep health checks.
     // The fallback HTTP proxy uses AppState. Axum's .with_state() applies to
     // routes added before that call, so the order here is intentional.
     Router::new()
         .route("/api/v1/streaming", get(streaming_handler))
         .with_state(ws_state)
+        .route("/health", get(health_handler))
         .fallback(proxy_handler)
         .with_state(app_state)
 }
