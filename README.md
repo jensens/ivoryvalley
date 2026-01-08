@@ -177,7 +177,7 @@ curl http://localhost:8080/health
 
 Response:
 ```json
-{"status": "healthy", "version": "0.1.0"}
+{"status": "healthy", "version": "x.y.z"}
 ```
 
 ### Deep Health Check
@@ -190,7 +190,7 @@ curl http://localhost:8080/health?deep=true
 
 Response:
 ```json
-{"status": "healthy", "version": "0.1.0", "checks": {"database": "ok"}}
+{"status": "healthy", "version": "x.y.z", "checks": {"database": "ok"}}
 ```
 
 This endpoint:
