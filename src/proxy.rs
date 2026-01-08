@@ -17,12 +17,13 @@ use crate::config::{AppState, Config};
 use crate::db::{extract_dedup_uri, SeenUriStore};
 use crate::recording::{now_timestamp, RecordedExchange, RecordedRequest, RecordedResponse};
 use crate::websocket::{streaming_handler, WebSocketState};
+use flate2::read::{DeflateDecoder, GzDecoder};
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::Arc;
 
 /// Headers that should NOT be forwarded to upstream
-/// Note: accept-encoding is stripped to prevent gzip responses, which we need to parse as JSON
-const STRIP_HEADERS: &[&str] = &["host", "connection", "transfer-encoding", "accept-encoding"];
+const STRIP_HEADERS: &[&str] = &["host", "connection", "transfer-encoding"];
 
 /// Timeline endpoint prefixes that should have deduplication applied
 const TIMELINE_ENDPOINTS: &[&str] = &[
@@ -302,10 +303,13 @@ async fn proxy_handler(
     // Convert the response
     let status = upstream_response.status();
     let response_headers = upstream_response.headers().clone();
-    let body = upstream_response
+    let raw_body = upstream_response
         .bytes()
         .await
         .map_err(|e| ProxyError::ResponseRead(e.to_string()))?;
+
+    // Decompress the body if needed (gzip or deflate)
+    let body = decompress_response_body(&raw_body, &response_headers)?;
 
     // Record the exchange if traffic recording is enabled
     if should_record {
@@ -345,16 +349,20 @@ async fn proxy_handler(
     let final_body = if should_filter && status.is_success() {
         filter_timeline_response(&body, &state)
     } else {
-        body.to_vec()
+        body
     };
 
     // Build the response
     let mut response = Response::builder().status(status);
 
-    // Forward response headers (except Content-Length which may have changed)
+    // Forward response headers (except Content-Length which may have changed and
+    // Content-Encoding since we decompress before forwarding)
     for (name, value) in response_headers.iter() {
         let name_lower = name.as_str().to_lowercase();
-        if STRIP_HEADERS.contains(&name_lower.as_str()) || name_lower == "content-length" {
+        if STRIP_HEADERS.contains(&name_lower.as_str())
+            || name_lower == "content-length"
+            || name_lower == "content-encoding"
+        {
             continue;
         }
 
@@ -392,6 +400,63 @@ async fn proxy_handler(
     response
         .body(Body::from(final_body))
         .map_err(|e| ProxyError::ResponseBuild(e.to_string()))
+}
+
+/// Decompress response body if Content-Encoding indicates compression.
+///
+/// Returns the decompressed body bytes, or the original body if not compressed.
+/// Returns an error if decompression fails for a compressed response.
+fn decompress_response_body(
+    body: &[u8],
+    headers: &reqwest::header::HeaderMap,
+) -> Result<Vec<u8>, ProxyError> {
+    let content_encoding = headers
+        .get(header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_lowercase());
+
+    match content_encoding.as_deref() {
+        Some("gzip") => {
+            let mut decoder = GzDecoder::new(body);
+            let mut decompressed = Vec::new();
+            decoder.read_to_end(&mut decompressed).map_err(|e| {
+                tracing::error!("Failed to decompress gzip response: {}", e);
+                ProxyError::Decompression(format!("gzip decompression failed: {}", e))
+            })?;
+            tracing::debug!(
+                "Decompressed gzip response: {} -> {} bytes",
+                body.len(),
+                decompressed.len()
+            );
+            Ok(decompressed)
+        }
+        Some("deflate") => {
+            let mut decoder = DeflateDecoder::new(body);
+            let mut decompressed = Vec::new();
+            decoder.read_to_end(&mut decompressed).map_err(|e| {
+                tracing::error!("Failed to decompress deflate response: {}", e);
+                ProxyError::Decompression(format!("deflate decompression failed: {}", e))
+            })?;
+            tracing::debug!(
+                "Decompressed deflate response: {} -> {} bytes",
+                body.len(),
+                decompressed.len()
+            );
+            Ok(decompressed)
+        }
+        Some(encoding) => {
+            // Unknown encoding - pass through unchanged
+            tracing::warn!(
+                "Unknown Content-Encoding '{}', passing through unchanged",
+                encoding
+            );
+            Ok(body.to_vec())
+        }
+        None => {
+            // No compression
+            Ok(body.to_vec())
+        }
+    }
 }
 
 /// Filter a timeline response, removing statuses that have already been seen.
@@ -561,6 +626,11 @@ fn build_upstream_headers(client_headers: &HeaderMap, upstream_url: &str) -> Hea
         upstream_headers.insert(name.clone(), value.clone());
     }
 
+    // Add Accept-Encoding to request gzip/deflate from upstream
+    if let Ok(header_value) = "gzip, deflate".parse::<header::HeaderValue>() {
+        upstream_headers.insert(header::ACCEPT_ENCODING, header_value);
+    }
+
     upstream_headers
 }
 
@@ -602,6 +672,8 @@ pub enum ProxyError {
     ResponseRead(String),
     /// Failed to build response
     ResponseBuild(String),
+    /// Failed to decompress response body
+    Decompression(String),
 }
 
 impl IntoResponse for ProxyError {
@@ -624,6 +696,10 @@ impl IntoResponse for ProxyError {
             ProxyError::ResponseBuild(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Response build error: {}", e),
+            ),
+            ProxyError::Decompression(e) => (
+                StatusCode::BAD_GATEWAY,
+                format!("Decompression error: {}", e),
             ),
         };
 
@@ -730,21 +806,109 @@ mod tests {
     }
 
     #[test]
-    fn test_build_upstream_headers_strips_accept_encoding() {
-        // Accept-Encoding must be stripped to prevent gzip responses
-        // that the proxy cannot parse for deduplication
+    fn test_build_upstream_headers_sets_accept_encoding() {
+        // Proxy now sends Accept-Encoding to request compressed responses
+        // and decompresses them before parsing for deduplication
         let mut client_headers = HeaderMap::new();
-        client_headers.insert("accept-encoding", "gzip, deflate, br".parse().unwrap());
+        client_headers.insert("accept-encoding", "br".parse().unwrap()); // Client sends br
         client_headers.insert("authorization", "Bearer token".parse().unwrap());
 
         let upstream = build_upstream_headers(&client_headers, "https://mastodon.social");
 
+        // Proxy should override with its own Accept-Encoding
+        let accept_encoding = upstream
+            .get("accept-encoding")
+            .expect("Accept-Encoding should be set");
+        let value = accept_encoding.to_str().unwrap();
         assert!(
-            upstream.get("accept-encoding").is_none(),
-            "Accept-Encoding should be stripped to prevent gzip responses"
+            value.contains("gzip") && value.contains("deflate"),
+            "Accept-Encoding should include gzip and deflate"
         );
         // Other headers should still pass through
         assert!(upstream.get("authorization").is_some());
+    }
+
+    #[test]
+    fn test_decompress_gzip_body() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let original = b"Hello, World!";
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+
+        let result = decompress_response_body(&compressed, &headers).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn test_decompress_deflate_body() {
+        use flate2::write::DeflateEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let original = b"Hello, World!";
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(header::CONTENT_ENCODING, "deflate".parse().unwrap());
+
+        let result = decompress_response_body(&compressed, &headers).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn test_decompress_no_encoding() {
+        let original = b"Hello, World!";
+        let headers = reqwest::header::HeaderMap::new();
+
+        let result = decompress_response_body(original, &headers).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn test_decompress_unknown_encoding_passes_through() {
+        let original = b"Hello, World!";
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(header::CONTENT_ENCODING, "br".parse().unwrap()); // Brotli not supported
+
+        let result = decompress_response_body(original, &headers).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn test_decompress_invalid_gzip_returns_error() {
+        let invalid = vec![0x1f, 0x8b, 0x08, 0x00, 0xff, 0xff];
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+
+        let result = decompress_response_body(&invalid, &headers);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ProxyError::Decompression(msg) => {
+                assert!(msg.contains("gzip"));
+            }
+            _ => panic!("Expected ProxyError::Decompression"),
+        }
+    }
+
+    #[test]
+    fn test_decompress_empty_body() {
+        let empty: &[u8] = &[];
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+
+        // Empty gzip is invalid, but we should handle it gracefully
+        let result = decompress_response_body(empty, &headers);
+        // This will fail because empty is not valid gzip
+        assert!(result.is_err());
     }
 
     #[test]
