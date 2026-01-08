@@ -13,8 +13,13 @@ use axum::{
     Router,
 };
 use common::{create_temp_dir, TestConfig};
+use flate2::write::{DeflateEncoder, GzEncoder};
+use flate2::Compression;
 use ivoryvalley::{config::Config, db::SeenUriStore, proxy::create_proxy_router};
+use std::io::Write;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc as StdArc;
 use tokio::net::TcpListener;
 
 /// Mock upstream server for testing
@@ -782,13 +787,12 @@ async fn test_trends_statuses_filtering() {
     assert_eq!(body.as_array().unwrap().len(), 0);
 }
 
-/// Test that the proxy strips Accept-Encoding header to prevent gzip responses.
+/// Test that the proxy sends Accept-Encoding and can handle gzip responses.
 ///
-/// This is critical for deduplication - the proxy must parse JSON responses to
-/// filter duplicates. If upstream returns gzip-compressed data, parsing fails
-/// and deduplication silently breaks.
+/// The proxy now requests gzip/deflate from upstream and decompresses responses
+/// before parsing JSON for deduplication. This reduces bandwidth usage.
 #[tokio::test]
-async fn test_accept_encoding_stripped_prevents_gzip() {
+async fn test_proxy_requests_compression_and_parses_json() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -796,14 +800,21 @@ async fn test_accept_encoding_stripped_prevents_gzip() {
     let received_accept_encoding = Arc::new(AtomicBool::new(false));
     let received_accept_encoding_clone = received_accept_encoding.clone();
 
-    // Create a mock that checks for Accept-Encoding and returns accordingly
+    // Create a mock that checks for Accept-Encoding
     let app = Router::new().route(
         "/api/v1/timelines/home",
         get(move |headers: axum::http::HeaderMap| async move {
-            let has_accept_encoding = headers.get("accept-encoding").is_some();
+            let has_accept_encoding = headers
+                .get("accept-encoding")
+                .map(|v| {
+                    let val = v.to_str().unwrap_or("");
+                    val.contains("gzip") && val.contains("deflate")
+                })
+                .unwrap_or(false);
             received_accept_encoding_clone.store(has_accept_encoding, Ordering::SeqCst);
 
-            // Return uncompressed JSON (proxy should never send accept-encoding)
+            // Return uncompressed JSON (upstream could return gzip but this test
+            // verifies the proxy SENDS Accept-Encoding)
             axum::Json(serde_json::json!([
                 {"id": "1", "uri": "https://example.com/1", "content": "test"}
             ]))
@@ -829,25 +840,21 @@ async fn test_accept_encoding_stripped_prevents_gzip() {
 
     let client = axum_test::TestServer::new(proxy_app).unwrap();
 
-    // Send request WITH Accept-Encoding header (like a real browser would)
+    // Send request (client's Accept-Encoding is replaced by proxy's own)
     let response = client
         .get("/api/v1/timelines/home")
-        .add_header(
-            axum::http::header::ACCEPT_ENCODING,
-            HeaderValue::from_static("gzip, deflate, br"),
-        )
         .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test"))
         .await;
 
     response.assert_status_ok();
 
-    // The proxy should have stripped the Accept-Encoding header
+    // The proxy should send Accept-Encoding: gzip, deflate to upstream
     assert!(
-        !received_accept_encoding.load(Ordering::SeqCst),
-        "Proxy must strip Accept-Encoding header to prevent gzip responses"
+        received_accept_encoding.load(Ordering::SeqCst),
+        "Proxy should send Accept-Encoding: gzip, deflate to upstream"
     );
 
-    // Verify response is valid JSON (deduplication worked)
+    // Verify response is valid JSON (parsing still works)
     let body: serde_json::Value = response.json();
     assert_eq!(body.as_array().unwrap().len(), 1);
 }
@@ -1307,4 +1314,354 @@ async fn test_health_endpoint_deep_check() {
     assert_eq!(body["status"], "healthy");
     assert!(body["version"].is_string());
     assert!(body["checks"]["database"].is_string());
+}
+
+// =============================================================================
+// Gzip/Deflate compression handling tests
+// =============================================================================
+
+/// Helper to create gzip-compressed data
+fn gzip_compress(data: &[u8]) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data).unwrap();
+    encoder.finish().unwrap()
+}
+
+/// Helper to create deflate-compressed data
+fn deflate_compress(data: &[u8]) -> Vec<u8> {
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data).unwrap();
+    encoder.finish().unwrap()
+}
+
+/// Test that gzip-compressed responses from upstream are decompressed and processed.
+#[tokio::test]
+async fn test_gzip_response_decompressed_and_filtered() {
+    // Create gzip-compressed JSON response with a status that can be deduplicated
+    let json_data =
+        r#"[{"id":"1","uri":"https://example.com/statuses/gzip1","content":"<p>Hello gzip</p>"}]"#;
+    let compressed_data = gzip_compress(json_data.as_bytes());
+
+    // Create mock that returns gzip-compressed response
+    let app = Router::new().route(
+        "/api/v1/timelines/home",
+        get({
+            let data = compressed_data.clone();
+            move |req: Request<Body>| {
+                let data = data.clone();
+                async move {
+                    let auth = req
+                        .headers()
+                        .get("Authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    if auth.is_empty() {
+                        return Response::builder()
+                            .status(401)
+                            .body(Body::from(r#"{"error":"unauthorized"}"#))
+                            .unwrap();
+                    }
+                    Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .header("Content-Encoding", "gzip")
+                        .body(Body::from(data))
+                        .unwrap()
+                }
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let upstream_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream_url, "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let proxy_app = create_proxy_router(config, std::sync::Arc::new(seen_store));
+
+    let client = axum_test::TestServer::new(proxy_app).unwrap();
+
+    // First request - should decompress and return the status
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let statuses = body.as_array().expect("Response should be an array");
+    assert_eq!(statuses.len(), 1, "First request should return 1 status");
+    assert_eq!(statuses[0]["id"], "1");
+
+    // Second request - should be filtered (deduplication worked on decompressed content)
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let statuses = body.as_array().expect("Response should be an array");
+    assert_eq!(
+        statuses.len(),
+        0,
+        "Second request should return 0 statuses (deduplicated)"
+    );
+}
+
+/// Test that deflate-compressed responses are decompressed.
+#[tokio::test]
+async fn test_deflate_response_decompressed() {
+    let json_data = r#"[{"id":"1","uri":"https://example.com/statuses/deflate1","content":"<p>Hello deflate</p>"}]"#;
+    let compressed_data = deflate_compress(json_data.as_bytes());
+
+    let app = Router::new().route(
+        "/api/v1/timelines/home",
+        get({
+            let data = compressed_data.clone();
+            move |req: Request<Body>| {
+                let data = data.clone();
+                async move {
+                    let auth = req
+                        .headers()
+                        .get("Authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    if auth.is_empty() {
+                        return Response::builder()
+                            .status(401)
+                            .body(Body::from(r#"{"error":"unauthorized"}"#))
+                            .unwrap();
+                    }
+                    Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .header("Content-Encoding", "deflate")
+                        .body(Body::from(data))
+                        .unwrap()
+                }
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let upstream_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream_url, "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let proxy_app = create_proxy_router(config, std::sync::Arc::new(seen_store));
+
+    let client = axum_test::TestServer::new(proxy_app).unwrap();
+
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let statuses = body.as_array().expect("Response should be an array");
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0]["id"], "1");
+}
+
+/// Test that malformed gzip data returns a 502 Bad Gateway error.
+#[tokio::test]
+async fn test_malformed_gzip_returns_error() {
+    // Create invalid gzip data (valid gzip header but corrupt body)
+    let invalid_gzip = vec![
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff,
+    ];
+
+    let app = Router::new().route(
+        "/api/v1/timelines/home",
+        get({
+            let data = invalid_gzip.clone();
+            move |_req: Request<Body>| {
+                let data = data.clone();
+                async move {
+                    Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .header("Content-Encoding", "gzip")
+                        .body(Body::from(data))
+                        .unwrap()
+                }
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let upstream_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream_url, "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let proxy_app = create_proxy_router(config, std::sync::Arc::new(seen_store));
+
+    let client = axum_test::TestServer::new(proxy_app).unwrap();
+
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test"))
+        .await;
+
+    // Should return 502 Bad Gateway for decompression errors
+    response.assert_status(axum::http::StatusCode::BAD_GATEWAY);
+}
+
+/// Test that Accept-Encoding header is sent to upstream.
+#[tokio::test]
+async fn test_accept_encoding_sent_to_upstream() {
+    let received_accept_encoding = StdArc::new(AtomicBool::new(false));
+    let received_clone = received_accept_encoding.clone();
+
+    let app = Router::new().route(
+        "/api/v1/timelines/home",
+        get(move |req: Request<Body>| {
+            let received = received_clone.clone();
+            async move {
+                let has_encoding = req
+                    .headers()
+                    .get("accept-encoding")
+                    .map(|v| {
+                        let value = v.to_str().unwrap_or("");
+                        value.contains("gzip") && value.contains("deflate")
+                    })
+                    .unwrap_or(false);
+                received.store(has_encoding, Ordering::SeqCst);
+
+                Response::builder()
+                    .status(200)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"[]"#))
+                    .unwrap()
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let upstream_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream_url, "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let proxy_app = create_proxy_router(config, std::sync::Arc::new(seen_store));
+
+    let client = axum_test::TestServer::new(proxy_app).unwrap();
+
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test"))
+        .await;
+
+    response.assert_status_ok();
+
+    // Verify that Accept-Encoding was sent to upstream
+    assert!(
+        received_accept_encoding.load(Ordering::SeqCst),
+        "Proxy should send Accept-Encoding: gzip, deflate to upstream"
+    );
+}
+
+/// Test that uncompressed responses still work correctly.
+#[tokio::test]
+async fn test_uncompressed_response_still_works() {
+    // Use the standard MockUpstream which returns uncompressed responses
+    let upstream = MockUpstream::start().await;
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream.url(), "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let app = create_proxy_router(config, std::sync::Arc::new(seen_store));
+
+    let client = axum_test::TestServer::new(app).unwrap();
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test_token"))
+        .await;
+
+    response.assert_status_ok();
+    let body = response.text();
+    assert!(body.contains("Hello"), "Uncompressed response should work");
+}
+
+/// Test that Content-Encoding header is not forwarded to client (we decompress).
+#[tokio::test]
+async fn test_content_encoding_not_forwarded() {
+    let json_data = r#"[{"id":"1","content":"Hello"}]"#;
+    let compressed_data = gzip_compress(json_data.as_bytes());
+
+    let app = Router::new().route(
+        "/api/v1/timelines/home",
+        get({
+            let data = compressed_data.clone();
+            move |_req: Request<Body>| {
+                let data = data.clone();
+                async move {
+                    Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .header("Content-Encoding", "gzip")
+                        .body(Body::from(data))
+                        .unwrap()
+                }
+            }
+        }),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let upstream_url = format!("http://{}", addr);
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let temp_dir = create_temp_dir();
+    let db_path = temp_dir.path().join("test.db");
+    let config = Config::new(&upstream_url, "0.0.0.0", 0, db_path);
+    let seen_store = SeenUriStore::open(":memory:").unwrap();
+    let proxy_app = create_proxy_router(config, std::sync::Arc::new(seen_store));
+
+    let client = axum_test::TestServer::new(proxy_app).unwrap();
+
+    let response = client
+        .get("/api/v1/timelines/home")
+        .add_header(AUTHORIZATION, HeaderValue::from_static("Bearer test"))
+        .await;
+
+    response.assert_status_ok();
+
+    // Content-Encoding should NOT be in the response (we decompress before forwarding)
+    assert!(
+        response.headers().get("content-encoding").is_none(),
+        "Content-Encoding should not be forwarded to client"
+    );
 }
