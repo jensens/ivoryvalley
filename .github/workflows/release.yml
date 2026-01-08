@@ -12,9 +12,37 @@ permissions:
   packages: write
 
 jobs:
+  # Verify Cargo.toml version matches the release tag
+  verify-version:
+    name: Verify version match
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from Cargo.toml
+        id: cargo
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$version" >> $GITHUB_OUTPUT
+
+      - name: Get version from tag
+        id: tag
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Verify versions match
+        run: |
+          echo "Cargo.toml version: ${{ steps.cargo.outputs.version }}"
+          echo "Tag version: ${{ steps.tag.outputs.version }}"
+          if [ "${{ steps.cargo.outputs.version }}" != "${{ steps.tag.outputs.version }}" ]; then
+            echo "::error::Version mismatch! Cargo.toml has ${{ steps.cargo.outputs.version }} but tag is ${{ steps.tag.outputs.version }}"
+            exit 1
+          fi
+          echo "✓ Versions match"
+
   # Build binaries for each platform
   build:
     name: Build ${{ matrix.target }}
+    needs: verify-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
