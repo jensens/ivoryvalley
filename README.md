@@ -141,6 +141,8 @@ IvoryValley supports configuration via:
 | `--connect-timeout-secs` | `IV_CONNECT_TIMEOUT_SECS` | `10` | HTTP connection timeout in seconds |
 | `--request-timeout-secs` | `IV_REQUEST_TIMEOUT_SECS` | `30` | HTTP request timeout in seconds |
 | `--record-traffic-path` | `IV_RECORD_TRAFFIC_PATH` | - | Path to record traffic (JSONL format) |
+| `--cleanup-interval-secs` | `IV_CLEANUP_INTERVAL_SECS` | `3600` (1 hour) | Interval between cleanup runs in seconds |
+| `--cleanup-max-age-secs` | `IV_CLEANUP_MAX_AGE_SECS` | `604800` (7 days) | Maximum age of stored URIs in seconds |
 | `-c, --config` | `IV_CONFIG` | - | Path to configuration file |
 
 ### Config File Example
